@@ -60,12 +60,14 @@ class VoiceCaptureSessionTest {
         var embedding: FloatArray? = null,
         var g2Ready: Boolean = false,
         var onLoad: (() -> Unit)? = null,
+        var onStarting: (() -> Unit)? = null,
     ) : VoiceCaptureHost {
         override val dispatcher = CallbackDispatcher { it() }
         var packetListener: FaceclawAudioPacketListener? = null
         var g2Stops = 0
         val recordings = mutableListOf<ByteArray>()
-        override fun onSessionStarting() {}
+        val transcriberRequests = mutableListOf<Pair<VoiceModelKind, String>>()
+        override fun onSessionStarting() { onStarting?.invoke() }
         override fun isG2SessionReady(): Boolean = g2Ready
         override fun isG2AudioCaptureActive(): Boolean = packetListener != null
         override fun g2AudioSource(): PacketAudioSource? = if (!g2Ready) null else object : PacketAudioSource {
@@ -95,6 +97,10 @@ class VoiceCaptureSessionTest {
         override fun loadTranscriber(kind: VoiceModelKind): OfflineTranscriber {
             onLoad?.invoke()
             return transcriber ?: error("no transcriber")
+        }
+        override fun loadTranscriber(kind: VoiceModelKind, language: String): OfflineTranscriber {
+            transcriberRequests.add(kind to language)
+            return loadTranscriber(kind)
         }
         override fun speakerEmbedder(modelPath: String): SpeakerEmbedder = object : SpeakerEmbedder {
             override fun embed(pcm16le: ByteArray, sampleRate: Int): FloatArray? = embedding
@@ -369,6 +375,34 @@ class VoiceCaptureSessionTest {
         session.stop()
         assertTrue(nextEvents.stoppedLatch.await(3000))
         assertTrue(nextEvents.pcmChunks.isEmpty())
+    }
+
+    @Test
+    fun modelAndLanguageAreSnapshottedUntilTheNextSession() {
+        val platform = testPlatform()
+        val ready = Latch(1, platform)
+        val proceed = Latch(1, platform)
+        val host = FakeHost(platform, mic = ScriptedMic(emptyList()), transcriber = FakeTranscriber { "" })
+        host.onStarting = { ready.countDown(); proceed.await(5000) }
+        val events = Events()
+        val session = session(host, platform, "voice-test-language")
+        session.setUsePhoneMic(true)
+        session.setListener(events)
+        session.setOnboardModelKind("whisper-multilingual")
+        session.setOnboardLanguage("ru")
+        session.start("onboard", 61)
+        assertTrue(ready.await(3000))
+        session.setOnboardModelKind("moonshine")
+        session.setOnboardLanguage("en")
+        proceed.countDown()
+        assertTrue(events.stoppedLatch.await(3000))
+        assertEquals(listOf(VoiceModelKind.WHISPER_MULTILINGUAL to "ru"), host.transcriberRequests)
+        val next = Events()
+        host.onStarting = null
+        session.setListener(next)
+        session.start("onboard", 62)
+        assertTrue(next.stoppedLatch.await(3000))
+        assertEquals(VoiceModelKind.MOONSHINE to "en", host.transcriberRequests.last())
     }
 
 }

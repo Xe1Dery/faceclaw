@@ -25,18 +25,20 @@ internal object AndroidSpeechEngines {
     private const val FEATURE_DIM = 80
 
     /** Sherpa-onnx configuration for the on-device model files in [modelDir]. */
-    fun recognizerConfig(modelDir: File, kind: VoiceModelKind): OfflineRecognizerConfig {
+    fun recognizerConfig(modelDir: File, kind: VoiceModelKind, language: String = ""): OfflineRecognizerConfig {
         val modelConfig = OfflineModelConfig.builder()
             .setNumThreads(1)
-        if (kind == VoiceModelKind.WHISPER) {
+        if (kind != VoiceModelKind.MOONSHINE) {
+            val multilingual = kind == VoiceModelKind.WHISPER_MULTILINGUAL
+            val prefix = if (multilingual) "base" else "base.en"
             modelConfig
                 .setWhisper(OfflineWhisperModelConfig.builder()
-                    .setEncoder(File(modelDir, "base.en-encoder.int8.onnx").absolutePath)
-                    .setDecoder(File(modelDir, "base.en-decoder.int8.onnx").absolutePath)
-                    .setLanguage("en")
+                    .setEncoder(File(modelDir, "$prefix-encoder.int8.onnx").absolutePath)
+                    .setDecoder(File(modelDir, "$prefix-decoder.int8.onnx").absolutePath)
+                    .setLanguage(if (multilingual) language else "en")
                     .setTask("transcribe")
                     .build())
-                .setTokens(File(modelDir, "base.en-tokens.txt").absolutePath)
+                .setTokens(File(modelDir, "$prefix-tokens.txt").absolutePath)
         } else {
             modelConfig
                 .setMoonshine(OfflineMoonshineModelConfig.builder()

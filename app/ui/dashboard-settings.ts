@@ -935,13 +935,14 @@ export function effectiveRingConnectionMode(): RingConnectionMode {
 // keeps its name (it's a persisted setting on real installs) but its label
 // below now says "OpenAI" to tell the two apart in the picker.
 // "whisper-server" is a self-hosted OpenAI-compatible Whisper (e.g. vLLM).
-export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
+export type VoiceProvider = "onboard" | "onboard-whisper" | "onboard-whisper-multilingual" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
 
 // On iOS "onboard" is Apple's on-device recognizer, and there is no
 // "onboard-whisper" (the sherpa-onnx models are Android-only).
 const voiceProviderLabels: Record<VoiceProvider, string> = {
   onboard: global.isIOS ? "On-device (Apple)" : "On-device (Moonshine)",
-  "onboard-whisper": "On-device (Whisper)",
+  "onboard-whisper": "On-device (Whisper English)",
+  "onboard-whisper-multilingual": "On-device (Whisper multilingual)",
   elevenlabs: "ElevenLabs",
   whisper: "OpenAI (Whisper)",
   soniox: "Soniox",
@@ -955,7 +956,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   defaultValue: "onboard",
   values: global.isIOS
     ? ["onboard", "elevenlabs", "whisper", "soniox", "whisper-server"]
-    : ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox", "whisper-server"],
+    : ["onboard", "onboard-whisper", "onboard-whisper-multilingual", "elevenlabs", "whisper", "soniox", "whisper-server"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
@@ -966,7 +967,17 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   },
   description: global.isIOS
     ? "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key (Settings > API Keys), with significantly better accuracy than on-device transcription. Whisper server is your own OpenAI-compatible Whisper (set its URL below). On-device uses your iPhone's speech language and never leaves the phone."
-    : "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. Whisper server is your own OpenAI-compatible Whisper (set its URL below). The two On-device options need their voice model downloaded (below) and never leave the phone.",
+    : "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. Whisper server is your own OpenAI-compatible Whisper (set its URL below). The On-device options need their voice model downloaded (below) and never leave the phone.",
+});
+
+export const onboardWhisperLanguageSetting = new ConfigSettingEnum<"ru" | "en" | "auto">({
+  id: "onboard-whisper-language",
+  label: "Local Whisper language",
+  storageKey: "voice.onboardWhisperLanguage",
+  defaultValue: "ru",
+  values: ["ru", "en", "auto"],
+  formatValue: (value) => ({ ru: "Русский", en: "English", auto: "Auto-detect" })[value],
+  description: "For multilingual on-device Whisper. Transcribes locally; auto-detection works per segment.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {

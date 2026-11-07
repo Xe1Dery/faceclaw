@@ -8,6 +8,7 @@ import kotlin.math.round
 enum class VoiceModelKind {
     MOONSHINE,
     WHISPER,
+    WHISPER_MULTILINGUAL,
 }
 
 /**

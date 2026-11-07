@@ -89,6 +89,7 @@ class FaceclawVoiceController(context: Context) {
 
     private val warmTranscriber = WarmTranscriber()
     @Volatile private var selectedKind = "moonshine"
+    @Volatile private var language = ""
     private val memoryCallbacks = object : ComponentCallbacks2 {
         override fun onConfigurationChanged(newConfig: Configuration) {}
         override fun onLowMemory() { warmTranscriber.invalidate() }
@@ -136,14 +137,17 @@ class FaceclawVoiceController(context: Context) {
 
         override fun hasTranscriberModel(kind: VoiceModelKind): Boolean = findAsrModelDir(kind) != null
 
-        override fun loadTranscriber(kind: VoiceModelKind): OfflineTranscriber {
+        override fun loadTranscriber(kind: VoiceModelKind): OfflineTranscriber = loadTranscriber(kind, "")
+
+        override fun loadTranscriber(kind: VoiceModelKind, language: String): OfflineTranscriber {
             val modelDir = findAsrModelDir(kind) ?: throw IllegalStateException("voice model missing")
+            val selectedLanguage = if (kind == VoiceModelKind.WHISPER_MULTILINGUAL) language else "en"
             // Include file identity so a replaced model cannot reuse old native weights.
             val files = modelDir.listFiles()?.sortedBy { it.name } ?: emptyList()
-            val key = kind.name + ":" + modelDir.absolutePath +
+            val key = kind.name + ":" + selectedLanguage + ":" + modelDir.absolutePath +
                 files.joinToString { "${it.name}:${it.length()}:${it.lastModified()}" }
             return warmTranscriber.acquire(key) {
-                AndroidSpeechEngines.SherpaTranscriber(AndroidSpeechEngines.recognizerConfig(modelDir, kind))
+                AndroidSpeechEngines.SherpaTranscriber(AndroidSpeechEngines.recognizerConfig(modelDir, kind, selectedLanguage))
             }
         }
 
@@ -191,6 +195,15 @@ class FaceclawVoiceController(context: Context) {
         if (next != selectedKind) warmTranscriber.invalidate()
         selectedKind = next
         session.setOnboardModelKind(kind)
+    }
+
+    fun setOnboardLanguage(value: String?) {
+        val next = value?.trim()?.lowercase() ?: ""
+        require(next in listOf("", "auto", "ru", "en")) { "Unsupported local Whisper language" }
+        val normalized = if (next == "auto") "" else next
+        if (normalized != language) warmTranscriber.invalidate()
+        language = normalized
+        session.setOnboardLanguage(normalized)
     }
 
     /**
@@ -290,8 +303,10 @@ class FaceclawVoiceController(context: Context) {
      */
     private fun findAsrModelDir(kind: VoiceModelKind): File? {
         val whisper = kind == VoiceModelKind.WHISPER
-        val dirName = if (whisper) ASR_WHISPER_MODEL_DIR else ASR_MODEL_DIR
-        val fileNames = if (whisper) ASR_WHISPER_MODEL_FILES else ASR_MODEL_FILES
+        val multilingual = kind == VoiceModelKind.WHISPER_MULTILINGUAL
+        val dirName = if (multilingual) "sherpa-onnx-whisper-base-int8" else if (whisper) ASR_WHISPER_MODEL_DIR else ASR_MODEL_DIR
+        val fileNames = if (multilingual) arrayOf("base-encoder.int8.onnx", "base-decoder.int8.onnx", "base-tokens.txt")
+            else if (whisper) ASR_WHISPER_MODEL_FILES else ASR_MODEL_FILES
         val modelDir = File(appContext.filesDir, ASR_ROOT + File.separator + dirName)
         for (fileName in fileNames) {
             val file = File(modelDir, fileName)

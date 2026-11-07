@@ -89,6 +89,7 @@ import {
   toggleSettingMenuItem,
   useMicControlSetting,
   voiceProviderSetting,
+  onboardWhisperLanguageSetting,
   screenTimeoutSetting,
   wakeToLastAppSetting,
   wakeWordActionSetting,
@@ -148,6 +149,8 @@ function settingsSections(): SettingsSection[] {
         ...whisperServerMenuItems(),
         asrModelMenuItem("moonshine"),
         asrModelMenuItem("whisper-base-en"),
+        asrModelMenuItem("whisper-base"),
+        enumSettingMenuItem(onboardWhisperLanguageSetting),
       ],
     },
     {

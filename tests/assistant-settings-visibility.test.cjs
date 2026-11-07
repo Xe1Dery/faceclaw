@@ -55,6 +55,7 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible') {
       ASR_MODELS: {
         moonshine: { label: 'Moonshine', sizeBytes: 1 },
         'whisper-base-en': { label: 'Whisper Base English', sizeBytes: 1 },
+        'whisper-base': { label: 'Whisper Multilingual', sizeBytes: 1 },
       },
       asrModelState: () => ({}), cancelAsrModelDownload() {},
       deleteAsrModel() {}, startAsrModelDownload() {}, onAsrModelStateChanged: () => () => {},

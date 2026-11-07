@@ -33,6 +33,8 @@ interface VoiceCaptureHost {
     /** Loads the recognizer for [kind]; throws when the model cannot be loaded. */
     fun loadTranscriber(kind: VoiceModelKind): OfflineTranscriber
 
+    fun loadTranscriber(kind: VoiceModelKind, language: String): OfflineTranscriber = loadTranscriber(kind)
+
     /** The speaker-embedding model at [modelPath] (may be shared/cached across sessions). */
     fun speakerEmbedder(modelPath: String): SpeakerEmbedder
 
@@ -114,7 +116,11 @@ class VoiceCaptureSession(
 
         @JvmStatic
         fun parseModelKind(kind: String?): VoiceModelKind =
-            if ("whisper" == kind) VoiceModelKind.WHISPER else VoiceModelKind.MOONSHINE
+            when (kind) {
+                "whisper" -> VoiceModelKind.WHISPER
+                "whisper-multilingual" -> VoiceModelKind.WHISPER_MULTILINGUAL
+                else -> VoiceModelKind.MOONSHINE
+            }
     }
 
     enum class Mode {
@@ -149,6 +155,8 @@ class VoiceCaptureSession(
     private var onboardModelKind = VoiceModelKind.MOONSHINE
     private var recognizer: OfflineTranscriber? = null
     private var activeOnboardKind = VoiceModelKind.MOONSHINE
+    @Volatile private var onboardLanguage = ""
+    private var activeOnboardLanguage = ""
     @Volatile
     private var activePacketSource: PacketAudioSource? = null
     private var captureRequestedAtMs = 0L
@@ -210,6 +218,10 @@ class VoiceCaptureSession(
 
     fun setOnboardModelKind(kind: String?) {
         this.onboardModelKind = parseModelKind(kind)
+    }
+
+    fun setOnboardLanguage(language: String) {
+        onboardLanguage = language
     }
 
     fun setEndpointing(endpointing: Boolean) {
@@ -285,6 +297,7 @@ class VoiceCaptureSession(
             captureRequestedAtMs = platform.elapsedRealtimeMs()
             activeCaptureId = captureId
             activeOnboardKind = onboardModelKind
+            activeOnboardLanguage = onboardLanguage
             timing("capture_requested")
             mode = parseMode(requestedMode)
             activePhoneMic = usePhoneMic
@@ -394,7 +407,7 @@ class VoiceCaptureSession(
             if (currentMode == Mode.ONBOARD) {
                 emitStatus("Preparing transcription model...")
                 timing("recognizer_start")
-                recognizer = host.loadTranscriber(currentOnboardKind)
+                recognizer = host.loadTranscriber(currentOnboardKind, activeOnboardLanguage)
                 timing("recognizer_ready")
                 if (!started) return
                 if (!activePhoneMic && audioQueue.droppedCount > 0) {

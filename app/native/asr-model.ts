@@ -9,7 +9,7 @@ declare const java: any;
  * than bundled in the APK; FaceclawVoiceController reads the files from the
  * directory each model's `dirName` names.
  *
- * Two models, same shape:
+ * Three models, same download/verification flow:
  *  - "moonshine": the original on-device option (three files). The model is
  *    no longer bundled in the APK; it is fetched into the same filesDir
  *    location that earlier releases copied the bundled files to, so
@@ -28,13 +28,16 @@ declare const java: any;
  *    release asset, matching the mirror-not-the-GH-tarball approach already
  *    used for Moonshine below. Every hash here was computed locally from a
  *    freshly downloaded copy of the file, not copied from a doc page.
+ *  - "whisper-base": multilingual base int8, pinned revision; Russian,
+ *    English or auto language in the existing sherpa backend. See
+ *    notes/voice-stt-smoke-results.md for measured limits (including mixed speech).
  *
  * Mirrors the on-phone assistant model flow in llama.ts, except each model
  * here is multiple files rather than one; they download sequentially through
  * FaceclawModelDownloader (resume + pinned sha256 per file).
  */
 
-export type AsrModelId = "moonshine" | "whisper-base-en";
+export type AsrModelId = "moonshine" | "whisper-base-en" | "whisper-base";
 
 type AsrModelFile = {
   name: string;
@@ -105,6 +108,18 @@ export const ASR_MODELS: Record<AsrModelId, AsrModelDef> = {
     ],
     totalBytes: 160626066,
   },
+  "whisper-base": {
+    label: "Whisper (multilingual, base)",
+    dirName: "sherpa-onnx-whisper-base-int8",
+    // Maintainer export; LFS SHA-256 from HF API, tokens hash verified locally.
+    baseUrl: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base/resolve/bb53ee204431c90d314c1cc08d28d23e5b7927cc/",
+    files: [
+      { name: "base-encoder.int8.onnx", sha256: "0b8fb1304b6109976038efff5ace81720e00386f3ff6b54ee8c75291ca0a1e11", sizeBytes: 29120534 },
+      { name: "base-decoder.int8.onnx", sha256: "9759d217388a01b3a4c7c15533201067b48ae819c4daafc8624e64b9409dc02d", sizeBytes: 130672026 },
+      { name: "base-tokens.txt", sha256: "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126", sizeBytes: 816730 },
+    ],
+    totalBytes: 160609290,
+  },
 };
 
 export type AsrModelState = {
@@ -129,6 +144,7 @@ function freshRuntime(): ModelRuntime {
 const runtimes: Record<AsrModelId, ModelRuntime> = {
   moonshine: freshRuntime(),
   "whisper-base-en": freshRuntime(),
+  "whisper-base": freshRuntime(),
 };
 
 function modelDirPath(id: AsrModelId): string {

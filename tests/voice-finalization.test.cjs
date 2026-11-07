@@ -163,7 +163,8 @@ function androidBridge() {
     starts: 0,
     setListener(listener) { this.listener = listener; },
     setCommunicator() {}, setUsePhoneMic() {}, setSaveRecordings() {}, setEndpointing() {},
-    setNoiseSuppression() {}, setBeamFilter() {}, clearSpeakerVerification() {}, setOnboardModelKind() {},
+    setNoiseSuppression() {}, setBeamFilter() {}, clearSpeakerVerification() {}, setOnboardModelKind(value) { this.model = value; },
+    setOnboardLanguage(value) { this.language = value; },
     start(_mode, id) { this.captureId = id; this.active = true; this.starts++; },
     stop() { this.active = false; },
     isCapturing() { return this.active; },
@@ -214,4 +215,20 @@ test('a shared capture restarts for a holder that needs another provider, and is
   bridge.stopContinuousCapture();
   assert.equal(controller.active, true);
   assert.equal(bridge.holdsCapture('ptt'), true);
+});
+
+
+test('multilingual local capture passes model and language to native and keys sharing by language', () => {
+  const { bridge, controller } = androidBridge();
+  const options = { provider: 'onboard-whisper-multilingual', language: 'ru' };
+  bridge.startPushToTalk(options);
+  assert.equal(controller.model, 'whisper-multilingual');
+  assert.equal(controller.language, 'ru');
+  bridge.stopPushToTalk(); controller.listener.onStopped(controller.captureId);
+  bridge.startPushToTalk({ ...options, language: '' });
+  assert.equal(controller.language, '');
+  bridge.stopPushToTalk(); controller.listener.onStopped(controller.captureId);
+  bridge.startPushToTalk({ provider: 'onboard-whisper' });
+  assert.equal(controller.model, 'whisper');
+  assert.equal(controller.language, '');
 });
