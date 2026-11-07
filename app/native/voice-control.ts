@@ -452,6 +452,14 @@ export class FaceclawVoiceControlBridge {
     this.setStatus("Voice control stopped.");
   }
 
+  /** Application shutdown; the native worker returns its lease before weights are freed. */
+  close(): void {
+    this.stop();
+    this.controller?.close();
+    this.controller = null;
+    this.listenerProxy = null;
+  }
+
   /**
    * The glasses session ended under a live capture (transport drop, charging
    * case, EvenHub suspend). Its mic enable did not survive, so drop the local

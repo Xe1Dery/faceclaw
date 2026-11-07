@@ -59,7 +59,7 @@ class VoiceCaptureSession(
     companion object {
         const val TAG = "FaceclawVoice"
         const val SAMPLE_RATE = 16000
-        const val MAX_AUDIO_QUEUE_PACKETS = 80
+        const val MAX_AUDIO_QUEUE_PACKETS = 400 // 20 s at G2 cadence; bounded cold-start buffer
         const val EXPECTED_PACKET_INTERVAL_MS = 50
         const val LATE_PACKET_INTERVAL_MS = 90
         const val STATS_INTERVAL_MS = 5_000
@@ -82,7 +82,6 @@ class VoiceCaptureSession(
         // buffers aren't amplified into pure noise.
         const val TRANSCRIPT_NORMALIZE_TARGET_PEAK = 0.9f
         const val TRANSCRIPT_NORMALIZE_MAX_GAIN = 30f
-        const val TRANSCRIPT_LOG_PREVIEW_CHARS = 80
         // Below this peak amplitude (pre-normalization, of a full-scale +/-1.0f
         // buffer) a segment is treated as silence and never reaches the Whisper
         // recognizer at all, rather than risking a hallucinated non-answer. Picked
@@ -149,6 +148,12 @@ class VoiceCaptureSession(
     @Volatile
     private var onboardModelKind = VoiceModelKind.MOONSHINE
     private var recognizer: OfflineTranscriber? = null
+    private var activeOnboardKind = VoiceModelKind.MOONSHINE
+    @Volatile
+    private var activePacketSource: PacketAudioSource? = null
+    private var captureRequestedAtMs = 0L
+    private var activeCaptureId = 0
+    private var closed = false
     private var packetDecoder: AudioPacketDecoder? = null
     private val transcriptSamples = FloatArray(TRANSCRIPT_SEGMENT_MAX_SAMPLES)
     private var transcriptSampleCount = 0
@@ -263,7 +268,7 @@ class VoiceCaptureSession(
 
     fun start(requestedMode: String?, captureId: Int) {
         lock.withLock {
-            if (started) {
+            if (workerFinished != null) {
                 emitStatus("Voice control is already listening.")
                 emitStopped(captureId)
                 return
@@ -273,6 +278,14 @@ class VoiceCaptureSession(
                 emitStopped(captureId)
                 return
             }
+            if (closed) {
+                emitStopped(captureId)
+                return
+            }
+            captureRequestedAtMs = platform.elapsedRealtimeMs()
+            activeCaptureId = captureId
+            activeOnboardKind = onboardModelKind
+            timing("capture_requested")
             mode = parseMode(requestedMode)
             activePhoneMic = usePhoneMic
             started = true
@@ -335,7 +348,14 @@ class VoiceCaptureSession(
     }
 
     fun close() {
+        lock.withLock { closed = true }
         stop()
+    }
+
+    private fun timing(stage: String) {
+        val now = platform.elapsedRealtimeMs()
+        logInfo("VoiceTiming capture=" + activeCaptureId + " stage=" + stage +
+            " atMs=" + now + " elapsedMs=" + (now - captureRequestedAtMs))
     }
 
     private fun parseMode(requestedMode: String?): Mode {
@@ -350,14 +370,37 @@ class VoiceCaptureSession(
         try {
             host.onSessionStarting()
             val currentMode = mode
-            val currentOnboardKind = onboardModelKind
+            val currentOnboardKind = activeOnboardKind
             if (currentMode == Mode.ONBOARD) {
                 if (!host.hasTranscriberModel(currentOnboardKind)) {
                     emitStatus("Voice model not downloaded (see Settings > Voice).")
                     return
                 }
-                emitStatus("Loading transcription model...")
+            }
+            if (!started) return
+            // Enable BLE before expensive STT preparation. Packets retain their original FIFO order.
+            if (!activePhoneMic) {
+                timing("decoder_start")
+                packetDecoder = host.createPacketDecoder()
+                timing("decoder_ready")
+                if (!started) return
+                if (!startG2Audio()) {
+                    emitStatus("Could not start G2 microphone input.")
+                    return
+                }
+                lock.withLock { audioStarted = true }
+                if (!started) return
+            }
+            if (currentMode == Mode.ONBOARD) {
+                emitStatus("Preparing transcription model...")
+                timing("recognizer_start")
                 recognizer = host.loadTranscriber(currentOnboardKind)
+                timing("recognizer_ready")
+                if (!started) return
+                if (!activePhoneMic && audioQueue.droppedCount > 0) {
+                    emitStatus("Voice startup buffer full. Please repeat the command.")
+                    return
+                }
                 resetTranscriptState()
                 lastTranscript = ""
             }
@@ -381,12 +424,6 @@ class VoiceCaptureSession(
                     record.close()
                 }
             } else {
-                packetDecoder = host.createPacketDecoder()
-                if (!startG2Audio()) {
-                    emitStatus("Could not start G2 microphone input.")
-                    return
-                }
-                lock.withLock { audioStarted = true }
                 emitStatus(if (currentMode == Mode.CLOUD) "Listening (cloud)..." else "Listening...")
                 processG2Audio()
             }
@@ -407,6 +444,10 @@ class VoiceCaptureSession(
             writeRecordingIfAny()
             releaseRecognizer()
             releaseDecoder()
+            audioQueue.clear()
+            verifyBuffer = null
+            resetTranscriptState()
+            lastTranscript = ""
             lock.withLock {
                 started = false
                 audioStarted = false
@@ -441,11 +482,21 @@ class VoiceCaptureSession(
         val source = host.g2AudioSource() ?: return false
         resetAudioStats()
         audioQueue.clear()
-        return source.start(object : FaceclawAudioPacketListener {
+        lock.withLock {
+            if (!started) return false
+            activePacketSource = source
+        }
+        timing("audio_enable_start")
+        val enabled = source.start(object : FaceclawAudioPacketListener {
             override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
-                queueAudioPacket(data, arm, arrivalMs)
+                lock.withLock {
+                    if (activePacketSource === source) queueAudioPacket(data, arm, arrivalMs)
+                }
             }
         })
+        timing("audio_enable_return")
+        if (!started) { source.stop(); return false }
+        return enabled
     }
 
     private fun processG2Audio() {
@@ -455,8 +506,13 @@ class VoiceCaptureSession(
             if (pcm.size < currentDecoder.maxSamplesPerPacket) pcm = ShortArray(currentDecoder.maxSamplesPerPacket)
             val packet = takeAudioPacket()
             if (packet == null) {
+                if (activePacketSource?.isActive() != true) {
+                    emitStatus("G2 microphone disconnected.")
+                    return
+                }
                 continue
             }
+            check(audioQueue.droppedCount == 0L) { "Voice audio buffer full. Please repeat the command." }
             val count = currentDecoder.decodePacket(packet.data, pcm)
             if (count <= 0) {
                 maybeEmitAudioStats(false)
@@ -540,7 +596,7 @@ class VoiceCaptureSession(
         // only decodes when a segment commits (8s buffer fill) or the utterance ends
         // (decodeTranscript(true) in runLoop()). No live preview text in Whisper
         // mode -- status stays "Listening..." until release. Deliberate tradeoff.
-        if (onboardModelKind == VoiceModelKind.WHISPER) {
+        if (activeOnboardKind != VoiceModelKind.MOONSHINE) {
             return
         }
         val now = platform.elapsedRealtimeMs()
@@ -628,7 +684,7 @@ class VoiceCaptureSession(
         // PRE-normalization peak, since normalizePeak() below would otherwise
         // amplify true silence right up to the target level. Moonshine does not
         // share this failure mode in practice, so it is left unchanged.
-        if (onboardModelKind == VoiceModelKind.WHISPER &&
+        if (activeOnboardKind != VoiceModelKind.MOONSHINE &&
             AudioSegmentation.peakAmplitude(segment) < WHISPER_SILENCE_PEAK_THRESHOLD
         ) {
             return ""
@@ -639,13 +695,11 @@ class VoiceCaptureSession(
 
     private fun logTranscriptDecode(isFinal: Boolean, segmentSampleCount: Int, text: String) {
         val totalAudioSec = (committedTranscriptSampleCount + transcriptSampleCount) / SAMPLE_RATE.toDouble()
-        val preview = if (text.length <= TRANSCRIPT_LOG_PREVIEW_CHARS) text
-        else text.substring(0, TRANSCRIPT_LOG_PREVIEW_CHARS) + "..."
         logInfo(
-            (if (onboardModelKind == VoiceModelKind.WHISPER) "Whisper" else "Moonshine") + " decode final=" + isFinal +
+            (if (activeOnboardKind != VoiceModelKind.MOONSHINE) "Whisper" else "Moonshine") + " decode final=" + isFinal +
                 " audioSec=" + formatFixed(totalAudioSec, 2) +
                 " segmentAudioSec=" + formatFixed(segmentSampleCount / SAMPLE_RATE.toDouble(), 2) +
-                " textLen=" + text.length + " text=\"" + preview + "\"",
+                " textLen=" + text.length,
         )
     }
 
@@ -726,7 +780,12 @@ class VoiceCaptureSession(
     }
 
     private fun stopG2Audio() {
-        host.g2AudioSource()?.stop()
+        val source = lock.withLock {
+            val owned = activePacketSource
+            activePacketSource = null
+            owned
+        }
+        source?.stop()
         maybeEmitAudioStats(true)
     }
 
@@ -745,10 +804,11 @@ class VoiceCaptureSession(
         if (!started || data == null) {
             return
         }
+        if (queuedPackets == 0L) timing("first_packet")
         if ("L" != arm) {
             wrongArmPackets++
         }
-        audioQueue.put(AudioPacket(data, arm, arrivalMs)) {
+        audioQueue.put(AudioPacket(data.copyOf(), arm, arrivalMs)) {
             queuedPackets++
             if (lastPacketArrivalMs > 0) {
                 val delta = arrivalMs - lastPacketArrivalMs

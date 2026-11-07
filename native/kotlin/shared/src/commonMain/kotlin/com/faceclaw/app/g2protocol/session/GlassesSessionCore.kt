@@ -2133,6 +2133,9 @@ class GlassesSessionCore(
         }
         val finalEvent = event
         if (finalEvent != null) {
+            if (finalEvent.kind == "even-ai" && finalEvent.eventType == BleProtocol.EVEN_AI_STATUS_WAKE_UP) {
+                PlatformLog.i("FaceclawVoice", "VoiceTiming stage=wake_received atMs=" + platform.elapsedRealtimeMs())
+            }
             if (finalEvent.hasImu) {
                 emitImuData(finalEvent.imuX, finalEvent.imuY, finalEvent.imuZ, finalEvent.eventSource)
             }

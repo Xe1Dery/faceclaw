@@ -1,5 +1,6 @@
 package com.faceclaw.app
 
+import kotlin.concurrent.Volatile
 import kotlin.math.abs
 import kotlin.math.round
 
@@ -99,6 +100,7 @@ fun formatFixed(value: Double, decimals: Int): String {
 class DroppingPacketQueue<T : Any>(private val capacity: Int, platform: ProtocolPlatform = protocolPlatform()) {
     private val condition = platform.createCondition()
     private val items = ArrayDeque<T>()
+    @Volatile
     var droppedCount: Long = 0
         private set
 

@@ -1,5 +1,7 @@
 package com.faceclaw.app
 
+import android.content.ComponentCallbacks2
+import android.content.res.Configuration
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -85,6 +87,18 @@ class FaceclawVoiceController(context: Context) {
     @Volatile
     private var communicator: FaceclawBleCommunicator? = null
 
+    private val warmTranscriber = WarmTranscriber()
+    @Volatile private var selectedKind = "moonshine"
+    private val memoryCallbacks = object : ComponentCallbacks2 {
+        override fun onConfigurationChanged(newConfig: Configuration) {}
+        override fun onLowMemory() { warmTranscriber.invalidate() }
+        override fun onTrimMemory(level: Int) {
+            if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) warmTranscriber.invalidate()
+        }
+    }
+
+    init { appContext.registerComponentCallbacks(memoryCallbacks) }
+
     private val host = object : VoiceCaptureHost {
         override val dispatcher = CallbackDispatcher { action -> mainHandler.post { action() } }
 
@@ -124,7 +138,13 @@ class FaceclawVoiceController(context: Context) {
 
         override fun loadTranscriber(kind: VoiceModelKind): OfflineTranscriber {
             val modelDir = findAsrModelDir(kind) ?: throw IllegalStateException("voice model missing")
-            return AndroidSpeechEngines.SherpaTranscriber(AndroidSpeechEngines.recognizerConfig(modelDir, kind))
+            // Include file identity so a replaced model cannot reuse old native weights.
+            val files = modelDir.listFiles()?.sortedBy { it.name } ?: emptyList()
+            val key = kind.name + ":" + modelDir.absolutePath +
+                files.joinToString { "${it.name}:${it.length()}:${it.lastModified()}" }
+            return warmTranscriber.acquire(key) {
+                AndroidSpeechEngines.SherpaTranscriber(AndroidSpeechEngines.recognizerConfig(modelDir, kind))
+            }
         }
 
         override fun speakerEmbedder(modelPath: String): SpeakerEmbedder {
@@ -167,6 +187,9 @@ class FaceclawVoiceController(context: Context) {
      * Must be set before {@link #start}; has no effect in CLOUD mode.
      */
     fun setOnboardModelKind(kind: String?) {
+        val next = kind ?: "moonshine"
+        if (next != selectedKind) warmTranscriber.invalidate()
+        selectedKind = next
         session.setOnboardModelKind(kind)
     }
 
@@ -230,7 +253,9 @@ class FaceclawVoiceController(context: Context) {
     }
 
     fun close() {
-        stop()
+        warmTranscriber.close()
+        appContext.unregisterComponentCallbacks(memoryCallbacks)
+        session.close()
     }
 
     /** Save the session's decoded mic PCM as a 16 kHz mono 16-bit WAV. */

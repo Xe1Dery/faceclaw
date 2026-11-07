@@ -1,0 +1,105 @@
+--- a/native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/audio/VoiceCaptureSession.kt
++++ b/native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/audio/VoiceCaptureSession.kt
+@@ -149,6 +149,8 @@
+     @Volatile
+     private var onboardModelKind = VoiceModelKind.MOONSHINE
+     private var recognizer: OfflineTranscriber? = null
++    private var captureRequestedAtMs = 0L
++    private var activeCaptureId = 0
+     private var packetDecoder: AudioPacketDecoder? = null
+     private val transcriptSamples = FloatArray(TRANSCRIPT_SEGMENT_MAX_SAMPLES)
+     private var transcriptSampleCount = 0
+@@ -273,6 +275,9 @@
+                 emitStopped(captureId)
+                 return
+             }
++            captureRequestedAtMs = platform.elapsedRealtimeMs()
++            activeCaptureId = captureId
++            timing("capture_requested")
+             mode = parseMode(requestedMode)
+             activePhoneMic = usePhoneMic
+             started = true
+@@ -338,6 +343,12 @@
+         stop()
+     }
+ 
++    private fun timing(stage: String) {
++        val now = platform.elapsedRealtimeMs()
++        logInfo("VoiceTiming capture=" + activeCaptureId + " stage=" + stage +
++            " atMs=" + now + " elapsedMs=" + (now - captureRequestedAtMs))
++    }
++
+     private fun parseMode(requestedMode: String?): Mode {
+         if ("cloud" == requestedMode) {
+             return Mode.CLOUD
+@@ -357,7 +368,9 @@
+                     return
+                 }
+                 emitStatus("Loading transcription model...")
++                timing("recognizer_start")
+                 recognizer = host.loadTranscriber(currentOnboardKind)
++                timing("recognizer_ready")
+                 resetTranscriptState()
+                 lastTranscript = ""
+             }
+@@ -381,7 +394,9 @@
+                     record.close()
+                 }
+             } else {
++                timing("decoder_start")
+                 packetDecoder = host.createPacketDecoder()
++                timing("decoder_ready")
+                 if (!startG2Audio()) {
+                     emitStatus("Could not start G2 microphone input.")
+                     return
+@@ -441,11 +456,14 @@
+         val source = host.g2AudioSource() ?: return false
+         resetAudioStats()
+         audioQueue.clear()
+-        return source.start(object : FaceclawAudioPacketListener {
++        timing("audio_enable_start")
++        val enabled = source.start(object : FaceclawAudioPacketListener {
+             override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
+                 queueAudioPacket(data, arm, arrivalMs)
+             }
+         })
++        timing("audio_enable_return")
++        return enabled
+     }
+ 
+     private fun processG2Audio() {
+@@ -639,13 +657,11 @@
+ 
+     private fun logTranscriptDecode(isFinal: Boolean, segmentSampleCount: Int, text: String) {
+         val totalAudioSec = (committedTranscriptSampleCount + transcriptSampleCount) / SAMPLE_RATE.toDouble()
+-        val preview = if (text.length <= TRANSCRIPT_LOG_PREVIEW_CHARS) text
+-        else text.substring(0, TRANSCRIPT_LOG_PREVIEW_CHARS) + "..."
+         logInfo(
+             (if (onboardModelKind == VoiceModelKind.WHISPER) "Whisper" else "Moonshine") + " decode final=" + isFinal +
+                 " audioSec=" + formatFixed(totalAudioSec, 2) +
+                 " segmentAudioSec=" + formatFixed(segmentSampleCount / SAMPLE_RATE.toDouble(), 2) +
+-                " textLen=" + text.length + " text=\"" + preview + "\"",
++                " textLen=" + text.length,
+         )
+     }
+ 
+@@ -745,6 +761,7 @@
+         if (!started || data == null) {
+             return
+         }
++        if (queuedPackets == 0L) timing("first_packet")
+         if ("L" != arm) {
+             wrongArmPackets++
+         }
+--- a/native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/session/GlassesSessionCore.kt
++++ b/native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/session/GlassesSessionCore.kt
+@@ -2133,6 +2133,9 @@
+         }
+         val finalEvent = event
+         if (finalEvent != null) {
++            if (finalEvent.kind == "even-ai" && finalEvent.eventType == BleProtocol.EVEN_AI_STATUS_WAKE_UP) {
++                PlatformLog.i("FaceclawVoice", "VoiceTiming stage=wake_received atMs=" + platform.elapsedRealtimeMs())
++            }
+             if (finalEvent.hasImu) {
+                 emitImuData(finalEvent.imuX, finalEvent.imuY, finalEvent.imuZ, finalEvent.eventSource)
+             }

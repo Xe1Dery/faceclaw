@@ -59,6 +59,7 @@ class VoiceCaptureSessionTest {
         var hasModel: Boolean = true,
         var embedding: FloatArray? = null,
         var g2Ready: Boolean = false,
+        var onLoad: (() -> Unit)? = null,
     ) : VoiceCaptureHost {
         override val dispatcher = CallbackDispatcher { it() }
         var packetListener: FaceclawAudioPacketListener? = null
@@ -91,7 +92,10 @@ class VoiceCaptureSessionTest {
         }
         override fun openPhoneMic(): PcmAudioSource? = mic
         override fun hasTranscriberModel(kind: VoiceModelKind): Boolean = hasModel
-        override fun loadTranscriber(kind: VoiceModelKind): OfflineTranscriber = transcriber ?: error("no transcriber")
+        override fun loadTranscriber(kind: VoiceModelKind): OfflineTranscriber {
+            onLoad?.invoke()
+            return transcriber ?: error("no transcriber")
+        }
         override fun speakerEmbedder(modelPath: String): SpeakerEmbedder = object : SpeakerEmbedder {
             override fun embed(pcm16le: ByteArray, sampleRate: Int): FloatArray? = embedding
             override fun release() {}
@@ -201,7 +205,7 @@ class VoiceCaptureSessionTest {
         assertTrue(events.stoppedLatch.await(10000))
         assertTrue(mic.closed)
         assertTrue(transcriber.released)
-        assertEquals("Loading transcription model...", events.statuses[0])
+        assertEquals("Preparing transcription model...", events.statuses[0])
         assertEquals("Listening...", events.statuses[1])
         val finals = events.transcripts.filter { it.second }
         assertEquals(1, finals.size)
@@ -270,4 +274,101 @@ class VoiceCaptureSessionTest {
         assertEquals("-0.333", formatFixed(-1.0 / 3, 3))
         assertEquals("0", formatFixed(0.4, 0))
     }
+    @Test
+    fun coldLoadBuffersFirstPacketsInOrderWithoutDuplication() {
+        val platform = testPlatform()
+        val ready = Latch(1, platform)
+        val continueLoad = Latch(1, platform)
+        val host = FakeHost(platform, g2Ready = true, transcriber = FakeTranscriber { "готово" })
+        host.onLoad = { ready.countDown(); continueLoad.await(5000) }
+        val events = Events()
+        val session = session(host, platform, "voice-test-early")
+        session.setListener(events)
+        session.start("onboard", 21)
+        assertTrue(ready.await(3000))
+        val listener = host.packetListener!! // enable must precede STT load
+        val first = packet(11, 0, 0)
+        listener.onAudioPacket(first, "L", 1000)
+        first[0] = 99 // BLE caller can reuse its buffer
+        listener.onAudioPacket(packet(22, 0, 0), "L", 1050)
+        continueLoad.countDown()
+        val deadline = platform.elapsedRealtimeMs() + 3000
+        while (events.pcmChunks.size < 2 && platform.elapsedRealtimeMs() < deadline) sleepMs(5)
+        session.stop()
+        assertTrue(events.stoppedLatch.await(3000))
+        assertEquals(2, events.pcmChunks.size)
+        assertEquals(11, events.pcmChunks[0][0].toInt())
+        assertEquals(22, events.pcmChunks[1][0].toInt())
+        assertTrue(logs.any { it.contains("stage=first_packet") })
+        assertFalse(logs.any { it.contains("готово") })
+    }
+
+    @Test
+    fun cancelledLoadCannotStartAnOverlappingWorkerOrEmitTranscript() {
+        val platform = testPlatform()
+        val ready = Latch(1, platform)
+        val continueLoad = Latch(1, platform)
+        val transcriber = FakeTranscriber { "must not send" }
+        val host = FakeHost(platform, g2Ready = true, transcriber = transcriber)
+        host.onLoad = { ready.countDown(); continueLoad.await(10000) }
+        val events = Events()
+        val session = session(host, platform, "voice-test-cancel-load")
+        session.setListener(events)
+        session.start("onboard", 31)
+        assertTrue(ready.await(3000))
+        session.stop() // times out while native load remains in flight
+        session.start("onboard", 32)
+        assertTrue(events.stopped.contains(32))
+        continueLoad.countDown()
+        val deadline = platform.elapsedRealtimeMs() + 3000
+        while (!events.stopped.contains(31) && platform.elapsedRealtimeMs() < deadline) sleepMs(5)
+        assertTrue(transcriber.released)
+        assertTrue(events.transcripts.isEmpty())
+        assertFalse(session.isCapturing())
+        session.close()
+    }
+
+    @Test
+    fun startupOverflowFailsWithoutSubmittingTruncatedSpeech() {
+        val platform = testPlatform()
+        val host = FakeHost(platform, g2Ready = true, transcriber = FakeTranscriber { "truncated" })
+        host.onLoad = {
+            repeat(VoiceCaptureSession.MAX_AUDIO_QUEUE_PACKETS + 1) {
+                host.packetListener!!.onAudioPacket(packet(10, 0, 0), "L", it * 50L)
+            }
+        }
+        val events = Events()
+        val session = session(host, platform, "voice-test-overflow")
+        session.setListener(events)
+        session.start("onboard", 41)
+        assertTrue(events.stoppedLatch.await(5000))
+        assertTrue(events.statuses.any { it?.contains("buffer full") == true })
+        assertTrue(events.transcripts.isEmpty())
+        assertTrue(events.pcmChunks.isEmpty())
+    }
+
+    @Test
+    fun disconnectEndsCaptureAndLateSourceCallbacksCannotReachNextSession() {
+        val platform = testPlatform()
+        val host = FakeHost(platform, g2Ready = true)
+        val events = Events()
+        val session = session(host, platform, "voice-test-disconnect")
+        session.setListener(events)
+        session.start("cloud", 51)
+        val deadline = platform.elapsedRealtimeMs() + 3000
+        while (host.packetListener == null && platform.elapsedRealtimeMs() < deadline) sleepMs(5)
+        val old = host.packetListener!!
+        host.packetListener = null
+        assertTrue(events.stoppedLatch.await(3000))
+        val nextEvents = Events()
+        session.setListener(nextEvents)
+        session.start("cloud", 52)
+        val nextDeadline = platform.elapsedRealtimeMs() + 3000
+        while (host.packetListener == null && platform.elapsedRealtimeMs() < nextDeadline) sleepMs(5)
+        old.onAudioPacket(packet(10, 0, 0), "L", 1000)
+        session.stop()
+        assertTrue(nextEvents.stoppedLatch.await(3000))
+        assertTrue(nextEvents.pcmChunks.isEmpty())
+    }
+
 }

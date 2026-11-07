@@ -3,6 +3,9 @@ import { registerShareIntentHandler } from './native/share-intents'
 import { installNativeUserAgent } from './util/http'
 import { registerPhoneRotation } from './native/phone-rotation'
 import { startLiveHealthSync, startAlignedRingPull } from './health/health-live'
+import { voiceControlBridge } from './native/voice-control'
+
+Application.on(Application.exitEvent, () => voiceControlBridge.close())
 
 installNativeUserAgent()
 registerShareIntentHandler()
