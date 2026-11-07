@@ -1,5 +1,6 @@
 import { AssistantMcpServer } from "./mcp-server";
 import { toolRegistry } from "./tool-registry";
+import { bridgeUrl, type BridgeTransport } from "./bridge-endpoint";
 import type { AssistantContext, AssistantTurnCallbacks, AssistantTurnHandle } from "./types";
 
 declare const com: any;
@@ -34,7 +35,8 @@ export type AssistantBridgeState = {
 
 export type AssistantBridgeOptions = {
   host: string;
-  port: number;
+  port?: number | string;
+  transport?: BridgeTransport;
   token: string;
   deviceName: string;
   /** Reads assistant.allowProactive; consulted per proactive tool call. */
@@ -59,6 +61,7 @@ export class AssistantBridgeClient {
   private reconnectDelayMs = RECONNECT_MIN_MS;
   private activeTurn: ActiveTurn | null = null;
   private turnSeq = 0;
+  private connectionGeneration = 0;
   private mcpServer: AssistantMcpServer | null = null;
   private unsubscribeToolsChanged: (() => void) | null = null;
   private readonly stateListeners = new Set<(state: AssistantBridgeState) => void>();
@@ -97,6 +100,7 @@ export class AssistantBridgeClient {
 
   /** Disconnect and stay down until the next configure(). */
   stop(): void {
+    this.connectionGeneration++;
     this.stopped = true;
     this.clearReconnectTimer();
     this.failActiveTurn("Bridge connection closed");
@@ -154,12 +158,19 @@ export class AssistantBridgeClient {
 
   private connect(): void {
     if (this.stopped || this.ws || !this.options) return;
-    const { host, port } = this.options;
-    const url = `ws://${host}:${port}`;
-    this.setState("connecting", `Connecting to ${host}:${port}...`);
+    let url: string;
+    try {
+      url = bridgeUrl(this.options.host, this.options.transport, this.options.port);
+    } catch {
+      this.setState("failed", "Invalid bridge host, transport or port.");
+      return;
+    }
+    const generation = ++this.connectionGeneration;
+    const current = () => !this.stopped && generation === this.connectionGeneration;
+    this.setState("connecting", `Connecting to ${url}...`);
     this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
       onOpen: () => {
-        if (this.stopped) return;
+        if (!current()) return;
         this.setState("connecting", "Authenticating...");
         this.send({
           chan: "ctl",
@@ -171,27 +182,27 @@ export class AssistantBridgeClient {
         });
       },
       onTextMessage: (message: string) => {
-        if (this.stopped) return;
+        if (!current()) return;
         this.handleMessage(String(message));
       },
-      onClosed: (code: number, reason: string) => {
-        if (this.stopped) return;
+      onClosed: (code: number, _reason: string) => {
+        if (!current()) return;
         this.handleConnectionLost(
-          `Connection closed (${Number(code)}${reason ? `: ${String(reason)}` : ""})`,
+          `Connection closed (${Number(code)})`,
         );
       },
-      onFailure: (message: string) => {
-        if (this.stopped) return;
-        this.handleConnectionLost(`Connection failed: ${String(message)}`);
+      onFailure: (_message: string) => {
+        if (!current()) return;
+        this.handleConnectionLost(this.options?.transport === "wss"
+          ? "Secure connection failed. Check network, hostname and TLS certificate."
+          : "Connection failed. Check network and bridge settings.");
       },
     });
     try {
       this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listenerProxy, null, null);
-    } catch (error) {
+    } catch {
       this.ws = null;
-      this.handleConnectionLost(
-        `Connection failed: ${String((error as Error)?.message ?? error)}`,
-      );
+      this.handleConnectionLost("Bridge connection could not be opened.");
     }
   }
 
@@ -229,10 +240,9 @@ export class AssistantBridgeClient {
       return;
     }
     if (frame.type === "error") {
-      // The server closes after a ctl error; the close handler schedules the
-      // re-dial. Record the reason so the status is more useful than a bare
-      // close code (especially for a bad token).
-      this.status = `Bridge error: ${String(frame.message ?? "unknown")}`;
+      // Do not echo untrusted server text, which can contain credentials.
+      // The server closes after a ctl error; onClosed schedules the re-dial.
+      this.status = "Bridge error: authorization or protocol rejected.";
       return;
     }
   }
@@ -267,6 +277,7 @@ export class AssistantBridgeClient {
   }
 
   private handleConnectionLost(status: string): void {
+    this.connectionGeneration++;
     this.ws = null;
     this.listenerProxy = null;
     // Keep a ctl-error status (e.g. "invalid token") in preference to the

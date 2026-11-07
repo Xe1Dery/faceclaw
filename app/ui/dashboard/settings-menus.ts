@@ -40,6 +40,7 @@ import {
   assistantHermesUrlSetting,
   assistantBridgeHostSetting,
   assistantBridgePortSetting,
+  assistantBridgeTransportSetting,
   assistantBridgeTokenSetting,
   assistantModelSetting,
   assistantOpenAiCompatibleKeySetting,
@@ -180,6 +181,7 @@ function settingsSections(): SettingsSection[] {
           toggleSettingMenuItem(assistantSkipConfirmationSetting),
           // iOS has no agent bridge yet.
           ...(!global.isIOS ? [
+            enumSettingMenuItem(assistantBridgeTransportSetting),
             textSettingMenuItem(assistantBridgeHostSetting),
             textSettingMenuItem(assistantBridgePortSetting),
             textSettingMenuItem(assistantBridgeTokenSetting),

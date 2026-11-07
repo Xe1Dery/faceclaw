@@ -115,6 +115,9 @@ constructor(url: String?, listener: FaceclawWebSocketListener?, headerName: Stri
                 synchronized(FaceclawWebSocket::class.java) {
                     if (sharedClient == null) {
                         sharedClient = OkHttpClient.Builder()
+                            // WebSocket endpoints must not redirect, including WSS to WS.
+                            .followRedirects(false)
+                            .followSslRedirects(false)
                             .pingInterval(20, TimeUnit.SECONDS)
                             .addInterceptor(FaceclawHttp.userAgentInterceptor())
                             .build()

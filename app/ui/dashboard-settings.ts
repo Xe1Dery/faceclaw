@@ -1049,12 +1049,22 @@ export const assistantHermesKeySetting = new ConfigSettingString({
   description: "The API server's key (API_SERVER_KEY in Hermes's .env).",
 });
 
+export const assistantBridgeTransportSetting = new ConfigSettingEnum<"ws" | "wss">({
+  id: "assistant-bridge-transport",
+  label: "Bridge transport",
+  storageKey: "assistant.bridgeTransport",
+  defaultValue: "ws",
+  values: ["ws", "wss"],
+  formatValue: (value) => value.toUpperCase(),
+  description: "WSS uses Android's trusted TLS certificates. No fallback to WS.",
+});
+
 export const assistantBridgeHostSetting = new ConfigSettingString({
   id: "assistant-bridge-host",
   label: "Bridge host",
   storageKey: "assistant.bridgeHost",
   defaultValue: "",
-  editorTitle: "Agent bridge host (tailscale IP)",
+  editorTitle: "Agent bridge hostname or IP",
   glassesEditTitle: "Edit bridge host",
   description:
     "Hostname or IP address (e.g. a Tailscale address) of the machine running the agent bridge.",
@@ -1064,10 +1074,11 @@ export const assistantBridgePortSetting = new ConfigSettingString({
   id: "assistant-bridge-port",
   label: "Bridge port",
   storageKey: "assistant.bridgePort",
-  defaultValue: "8790",
-  editorTitle: "Agent bridge port",
+  defaultValue: "",
+  editorTitle: "Agent bridge port (empty = automatic)",
   glassesEditTitle: "Edit bridge port",
-  description: "TCP port the agent bridge listens on. The default is 8790.",
+  formatValue: (value) => value || (assistantBridgeTransportSetting.get() === "wss" ? "443 (automatic)" : "8790 (automatic)"),
+  description: "Empty uses 8790 for WS or 443 for WSS. Explicit ports are preserved.",
 });
 
 export const assistantBridgeTokenSetting = new ConfigSettingString({
@@ -1077,7 +1088,7 @@ export const assistantBridgeTokenSetting = new ConfigSettingString({
   defaultValue: "",
   editorTitle: "Agent bridge auth token",
   glassesEditTitle: "Edit bridge token",
-  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  formatValue: (value) => (value ? "(set)" : "(not set)"),
   description: "Shared secret that must match the bridge's configured token.",
 });
 

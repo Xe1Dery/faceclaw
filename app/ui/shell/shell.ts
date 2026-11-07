@@ -36,6 +36,7 @@ import {
   assistantBackendSetting,
   assistantBridgeHostSetting,
   assistantBridgePortSetting,
+  assistantBridgeTransportSetting,
   assistantBridgeTokenSetting,
   assistantModelSetting,
   assistantOpenAiCompatibleKeySetting,
@@ -1737,8 +1738,9 @@ class Shell {
       const host = assistantBridgeHostSetting.get().trim();
       const token = assistantBridgeTokenSetting.get();
       if (!host || !token) return null;
-      const port = parseInt(assistantBridgePortSetting.get(), 10) || 8790;
-      return { kind: "external", bridge: { host, port, token } };
+      const port = assistantBridgePortSetting.get();
+      const transport = assistantBridgeTransportSetting.get();
+      return { kind: "external", bridge: { host, port, transport, token } };
     }
     const llm = resolveAssistantModel(model, {
       anthropic: anthropicApiKeySetting.get(),

@@ -34,6 +34,7 @@ export type AssistantTurnHandle = {
 /** Connection settings for the external agent bridge (assistant.bridge* settings). */
 export type AssistantBridgeConfig = {
   host: string;
-  port: number;
+  port: number | string;
+  transport?: "ws" | "wss";
   token: string;
 };
