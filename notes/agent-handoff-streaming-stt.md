@@ -1,10 +1,13 @@
 # Handoff: Faceclaw Russian streaming STT and local Android signing
 
-Last updated: 2026-11-08 (Asia/Yekaterinburg)
+Last updated: 2026-11-08 (Asia/Yekaterinburg) — Linux-host port, see "Linux build host" below.
 
 ## Goal and non-negotiable constraints
 
 Repository: `Xe1Dery/faceclaw`, working copy at `F:\Even G2` on Windows/PowerShell.
+As of 2026-11-08 the active working copy moved to Linux:
+`/home/xeldery/tools/faceclaw`, branch `main` at `dcfd2de` (all streaming-STT work
+committed; the previously dirty Windows tree is now history).
 
 The user wants live Russian transcription on real Even G2: text must grow on the display while the
 speaker is still talking. The existing WSS/Nginx path, Whisper Multilingual integration, fast Voice
@@ -267,7 +270,8 @@ Active local signing material (never commit or print password file contents):
 - `.tooling\signing\last-version-code.txt`
 
 Active certificate file currently contains the expected `1b22...d264` digest. The last version
-code is currently 809, so the next successful build should use 810.
+code is currently 810 (built on the Linux host, see below), so the next successful build should
+use 811.
 
 An earlier newly generated permanent key remains locally as
 `.tooling\signing\faceclaw-local-updates.jks`, certificate `e133a54d...b9972d`, but it is inactive.
@@ -285,69 +289,84 @@ separate store/key password files, increments the local version code, signs, and
 Back up the entire `.tooling\signing\` directory securely. Losing the active debug key prevents
 future in-place updates. `.tooling/` and `dist/` are Git-ignored.
 
+## Linux build host (current environment, added 2026-11-08)
+
+All user-space, no root. Source `./build_paths.sh` before any build command; it exports:
+
+- `JAVA_HOME=$HOME/.jdks/jdk21` — Temurin JDK 21.0.13+9 (system default JDK 27 must not be used;
+  Gradle 8.14 rejects JDK 25+)
+- `ANDROID_HOME=$HOME/Android/Sdk` — cmdline-tools 12.0, platform-tools (adb 37.0.1),
+  platforms;android-35, build-tools;35.0.0, ndk;27.2.12479018, cmake;3.22.1, emulator 37.3.8
+- Node v22.23.4 from `~/.local/node22/bin` (system Node 26 must not be used)
+
+Notes:
+
+- `sdkmanager` downloads throttled to ~36 KB/s on this network; install SDK packages by direct
+  `curl` of the repository2 XML URLs plus `unzip` into the SDK layout instead. The NativeScript
+  CLI doctor requires the `emulator` package to exist even for device builds.
+- `android-udev` (pacman) is installed; USB adb should work. Wireless adb is an alternative.
+- `scripts/build-local-release.sh` is the bash port of `build-local-release.ps1`: same signing
+  profile, same version-code bookkeeping, same apksigner verification, plus aapt badging and the
+  APK file hash. Run it from the repo root; it sources `scripts/before_build.sh` itself.
+- Native artifacts cache under `App_Resources/Android/build/faceclaw-native/`; first full build
+  took ~28 minutes on an i5-8350U, incremental builds are minutes. Do not clean `platforms/`,
+  Gradle caches, or `.tooling/` before the final APK.
+- Verification on Linux: `tsc --noEmit` passed; `npm test` 1144 passed / 0 failed / 3 skipped
+  (both Windows-baseline failures from the earlier run are gone on Linux); Kotlin host suite
+  `npm run test:kotlin` BUILD SUCCESSFUL.
+
+## Completed on the Linux host
+
+`./scripts/build-local-release.sh` produced and verified
+`dist/Faceclaw-0.8.7-local-810.apk` (95,841,388 bytes):
+
+- package `com.faceclaw.app`, versionName `0.8.7`, versionCode 810
+- signer SHA-256 `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264` (the adopted
+  debug key; installs over the user's installed debug build without data loss)
+- APK Signature Scheme v2: true
+- no `encoder.int8.onnx`, `decoder.onnx`, `joiner.int8.onnx`, or `tokens.txt` entries in the APK
+- file SHA-256: `f7634b5d076e0329581c23cea917d67401c1d93989841d853f9d0bdae94f82be`
+- `last-version-code.txt` updated to 810; next successful build uses 811
+
+`dist/Faceclaw-0.8.7-local-811.apk` (95,841,428 bytes, SHA-256
+`daf5e2e9fcb09e90709d1899776bc4ab00c9e1deb7c2e6ef5c076d71b446d917`) adds the
+streaming-STT tail fix (drain + stream recreate); same signer, v2 scheme, no model
+weights inside.
+
+`dist/Faceclaw-0.8.7-local-812.apk` (95,844,748 bytes, SHA-256
+`ff133aef3917349ad85b6f771c9740219fc36adb3d3e12d305039670351e6fc7`) adds the
+interactive reminder tools (`glasses.reminder_show` / `glasses.reminder_cancel`,
+tap-to-answer popup, RU answer classifier). Same signer
+`1b22f1a2...d264`, v2 scheme, no model weights. Built under the memory caps with
+the new 8G btrfs swapfile active; full suite 1168 pass / 0 fail beforehand.
+
+No GitHub Release was created and no APK was uploaded anywhere.
+
 ## Unfinished work — do this next
 
-The build with the adopted debug key has **not** completed yet. The attempt to run it was rejected
-because the automatic sandbox approval reviewer hit its usage limit, not because the command was
-unsafe or because compilation failed.
+0. **Interactive reminders (TickTick <-> OpenClaw, added 2026-11-08).** The phone side
+   is in this repo: `glasses.reminder_show` / `glasses.reminder_cancel`
+   (`app/assistant/reminder-tools.ts`, popup layer `app/ui/shell/reminder-layer.ts`,
+   classifier `app/assistant/reminder-intents.ts`; tests `tests/reminder-*.test.cjs`).
+   The controller lives OUTSIDE this repo, in `~/tools/llm/nano_assistant/`
+   (TickTick official MCP + OpenClaw script payload + courier protocol; see its
+   README for setup). Next: build versionCode 812, deploy the payload + automation
+   job on the OpenClaw host, run the end-to-end acceptance from that README.
+1. If a phone is connected, inspect the actually installed APK before installation
+   (Linux equivalent of `scripts/inspect-installed-android.ps1`: `adb shell pm path com.faceclaw.app`,
+   `adb pull`, then `aapt dump badging` + `apksigner verify --print-certs`). The reference APK/key
+   match already proves the intended lineage, but this is the strongest final check.
 
-1. When command approval is available, run:
+2. Install without deleting data:
 
-   ```powershell
-   . .\.tooling\use-env.ps1
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local-release.ps1
+   ```bash
+   adb install -r dist/Faceclaw-0.8.7-local-810.apk
    ```
 
-   Expected output path: `dist\Faceclaw-0.8.7-local-810.apk` (or the next code if another build was
-   completed first).
+   Manual transfer through cloud storage and opening the same APK on the phone is equivalent
+   (the user's preferred path). Never uninstall automatically.
 
-2. Verify package/version/signature:
-
-   ```powershell
-   . .\.tooling\use-env.ps1
-   $apk = 'dist\Faceclaw-0.8.7-local-810.apk'
-   & "$env:ANDROID_HOME\build-tools\35.0.0\aapt.exe" dump badging $apk | Select-Object -First 1
-   & "$env:ANDROID_HOME\build-tools\35.0.0\apksigner.bat" verify --verbose --print-certs $apk
-   Get-FileHash -Algorithm SHA256 -LiteralPath $apk
-   ```
-
-   Required values:
-
-   - package: `com.faceclaw.app`
-   - versionName: `0.8.7`
-   - versionCode: greater than 806, expected 810
-   - signer SHA-256: `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`
-   - APK Signature Scheme v2: true
-
-3. Verify no model weights were packaged:
-
-   ```powershell
-   tar -tf $apk | Select-String -Pattern '(^|/)(encoder\.int8\.onnx|decoder\.onnx|joiner\.int8\.onnx|tokens\.txt)$'
-   ```
-
-   Expected result: no matches.
-
-4. If a phone becomes available, inspect the actually installed APK before installation:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts\inspect-installed-android.ps1
-   ```
-
-   No ADB device was connected during the implementation. The user says the installed app is the
-   local debug build, and the reference APK/key match proves the intended lineage, but inspecting
-   the phone is still the strongest final check.
-
-5. Install without deleting data:
-
-   ```powershell
-   adb install -r "F:\Even G2\dist\Faceclaw-0.8.7-local-810.apk"
-   ```
-
-   Manual transfer through cloud storage and opening the same APK on the phone is equivalent. Since
-   package ID, signing key, and increasing version code match, Android should update it in place.
-   Never uninstall automatically.
-
-6. Perform the real G2 acceptance test; this is the remaining product-level criterion:
+3. Perform the real G2 acceptance test; this is the remaining product-level criterion:
 
    - Open Settings > Voice.
    - Download `Zipformer Streaming (Russian, small INT8)`.
@@ -360,7 +379,7 @@ unsafe or because compilation failed.
    - Capture `adb logcat -s FaceclawVoice` and `adb shell dumpsys meminfo com.faceclaw.app`.
    - Compare the same recorded phrase set with Whisper Multilingual and calculate normalized WER.
 
-7. Only if representative G2 results show materially inadequate Zipformer accuracy, prototype or
+4. Only if representative G2 results show materially inadequate Zipformer accuracy, prototype or
    benchmark T-One. Do not wire T-One into settings automatically.
 
 ## Final delivery reminder
