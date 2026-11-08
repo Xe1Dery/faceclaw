@@ -340,6 +340,18 @@ tap-to-answer popup, RU answer classifier). Same signer
 `1b22f1a2...d264`, v2 scheme, no model weights. Built under the memory caps with
 the new 8G btrfs swapfile active; full suite 1168 pass / 0 fail beforehand.
 
+`dist/Faceclaw-0.8.7-local-813.apk` (95,845,044 bytes, SHA-256
+`5da354528be047989f11005f14902a981571a4b27afacb078979be6acd7e38ba`) adds the
+re-ask flow: an unrecognized voice answer re-arms the popup once ("Не расслышал
+… Тап — ещё раз") instead of settling as ambiguous free text. Suite 1171/0.
+
+`dist/Faceclaw-0.8.7-local-814.apk` (95,845,176 bytes, SHA-256
+`ca6f0c2fbcb12c54a02fa970741bf10209634413b08a6567483796cca8d32779`) adds
+`free_text` mode to `glasses.reminder_show` (grouped popups: any answer returns
+verbatim as action `other`, no classification, no re-ask). Suite 1172/0.
+Reminder acceptance passed on-device for the single-popup cycle (done ->
+TickTick complete; "через 10 минут" -> due date moved).
+
 No GitHub Release was created and no APK was uploaded anywhere.
 
 ## Unfinished work — do this next
@@ -350,8 +362,11 @@ No GitHub Release was created and no APK was uploaded anywhere.
    classifier `app/assistant/reminder-intents.ts`; tests `tests/reminder-*.test.cjs`).
    The controller lives OUTSIDE this repo, in `~/tools/llm/nano_assistant/`
    (TickTick official MCP + OpenClaw script payload + courier protocol; see its
-   README for setup). Next: build versionCode 812, deploy the payload + automation
-   job on the OpenClaw host, run the end-to-end acceptance from that README.
+   README for setup). Deployed and accepted through APK 812; v2 policy (grouped
+   popups, fixed 5m retry, courier-authored wording, REMINDER_EVENT v2) needs
+   APK 814 + the regenerated payload + the new AGENTS.reminder.md block on the
+   OpenClaw host. Next: install 814, redeploy payload, run the grouped-popup
+   acceptance from the nano_assistant README.
 1. If a phone is connected, inspect the actually installed APK before installation
    (Linux equivalent of `scripts/inspect-installed-android.ps1`: `adb shell pm path com.faceclaw.app`,
    `adb pull`, then `aapt dump badging` + `apksigner verify --print-certs`). The reference APK/key
