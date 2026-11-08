@@ -5,6 +5,7 @@ hooks/before-prepare/*
 !hooks/before-prepare/faceclaw-kotlin.js
 node_modules/
 platforms/
+.tooling/
 
 # Release APKs from scripts/release.sh
 dist/

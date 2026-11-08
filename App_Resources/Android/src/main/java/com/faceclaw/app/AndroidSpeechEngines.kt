@@ -10,6 +10,12 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult
 import com.k2fsa.sherpa.onnx.OfflineStream
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
+import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineRecognizer
+import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OnlineRecognizerResult
+import com.k2fsa.sherpa.onnx.OnlineStream
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 
 import java.io.File
 
@@ -56,6 +62,31 @@ internal object AndroidSpeechEngines {
             .build()
     }
 
+    /** Configuration for the small Russian streaming Zipformer transducer. */
+    fun streamingRecognizerConfig(modelDir: File): OnlineRecognizerConfig {
+        val transducer = OnlineTransducerModelConfig.builder()
+            .setEncoder(File(modelDir, "encoder.int8.onnx").absolutePath)
+            .setDecoder(File(modelDir, "decoder.onnx").absolutePath)
+            .setJoiner(File(modelDir, "joiner.int8.onnx").absolutePath)
+            .build()
+        val model = OnlineModelConfig.builder()
+            .setTransducer(transducer)
+            .setTokens(File(modelDir, "tokens.txt").absolutePath)
+            .setNumThreads(2)
+            .setDebug(false)
+            .setModelType("zipformer2")
+            .build()
+        return OnlineRecognizerConfig.builder()
+            .setFeatureConfig(FeatureConfig.builder()
+                .setSampleRate(SAMPLE_RATE)
+                .setFeatureDim(FEATURE_DIM)
+                .build())
+            .setOnlineModelConfig(model)
+            .setEnableEndpoint(true)
+            .setDecodingMethod("greedy_search")
+            .build()
+    }
+
     class SherpaTranscriber(config: OfflineRecognizerConfig) : OfflineTranscriber {
         private var recognizer: OfflineRecognizer? = OfflineRecognizer(config)
 
@@ -75,6 +106,71 @@ internal object AndroidSpeechEngines {
         }
 
         override fun release() {
+            recognizer?.release()
+            recognizer = null
+        }
+    }
+
+    /** One reusable OnlineRecognizer with a stream reset between voice sessions. */
+    class SherpaStreamingTranscriber(config: OnlineRecognizerConfig) : StreamingTranscriber {
+        private var recognizer: OnlineRecognizer? = OnlineRecognizer(config)
+        private var stream: OnlineStream? = recognizer!!.createStream()
+        private var acceptedSamples = 0L
+        private var totalDecodeMs = 0L
+        private var maxDecodeMs = 0L
+
+        override fun accept(samples: FloatArray, count: Int): StreamingRecognition {
+            val currentStream = stream ?: return StreamingRecognition("")
+            val segment = if (count == samples.size) samples else samples.copyOf(count)
+            currentStream.acceptWaveform(segment, SAMPLE_RATE)
+            acceptedSamples += segment.size
+            return decodeReady()
+        }
+
+        override fun finish(): StreamingRecognition {
+            stream?.inputFinished()
+            val result = decodeReady()
+            val runtime = Runtime.getRuntime()
+            val javaHeapMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+            Log.i(
+                TAG,
+                "ZipformerPerf audioSec=" + String.format(java.util.Locale.US, "%.2f", acceptedSamples / SAMPLE_RATE.toDouble()) +
+                    " decodeMs=$totalDecodeMs maxDecodeMs=$maxDecodeMs javaHeapMb=$javaHeapMb",
+            )
+            acceptedSamples = 0
+            totalDecodeMs = 0
+            maxDecodeMs = 0
+            return result
+        }
+
+        override fun reset() {
+            val currentRecognizer = recognizer ?: return
+            val currentStream = stream ?: return
+            currentRecognizer.reset(currentStream)
+        }
+
+        private fun decodeReady(): StreamingRecognition {
+            val currentRecognizer = recognizer ?: return StreamingRecognition("")
+            val currentStream = stream ?: return StreamingRecognition("")
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            var decoded = false
+            while (currentRecognizer.isReady(currentStream)) {
+                currentRecognizer.decode(currentStream)
+                decoded = true
+            }
+            if (decoded) {
+                val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+                totalDecodeMs += elapsed
+                if (elapsed > maxDecodeMs) maxDecodeMs = elapsed
+            }
+            val result: OnlineRecognizerResult? = currentRecognizer.getResult(currentStream)
+            val text = result?.text?.trim() ?: ""
+            return StreamingRecognition(text, currentRecognizer.isEndpoint(currentStream))
+        }
+
+        override fun release() {
+            stream?.release()
+            stream = null
             recognizer?.release()
             recognizer = null
         }

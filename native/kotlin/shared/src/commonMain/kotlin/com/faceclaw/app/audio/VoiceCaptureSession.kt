@@ -35,6 +35,10 @@ interface VoiceCaptureHost {
 
     fun loadTranscriber(kind: VoiceModelKind, language: String): OfflineTranscriber = loadTranscriber(kind)
 
+    /** Loads an incremental recognizer. Only streaming model kinds call this method. */
+    fun loadStreamingTranscriber(kind: VoiceModelKind): StreamingTranscriber =
+        error("Streaming recognizer is not available for $kind")
+
     /** The speaker-embedding model at [modelPath] (may be shared/cached across sessions). */
     fun speakerEmbedder(modelPath: String): SpeakerEmbedder
 
@@ -71,6 +75,7 @@ class VoiceCaptureSession(
         // used here fails once a single input grows past roughly 9.1 seconds, so
         // longer utterances are committed in model-safe segments.
         const val TRANSCRIPT_DECODE_INTERVAL_MS = 700
+        const val STREAMING_PARTIAL_EMIT_INTERVAL_MS = 120
         const val TRANSCRIPT_MIN_SAMPLES = SAMPLE_RATE / 3
         const val TRANSCRIPT_SEGMENT_MAX_SAMPLES = SAMPLE_RATE * 8
         // When a segment fills, cut at the quietest window within the last
@@ -119,6 +124,7 @@ class VoiceCaptureSession(
             when (kind) {
                 "whisper" -> VoiceModelKind.WHISPER
                 "whisper-multilingual" -> VoiceModelKind.WHISPER_MULTILINGUAL
+                "zipformer-ru" -> VoiceModelKind.ZIPFORMER_RU
                 else -> VoiceModelKind.MOONSHINE
             }
     }
@@ -154,6 +160,7 @@ class VoiceCaptureSession(
     @Volatile
     private var onboardModelKind = VoiceModelKind.MOONSHINE
     private var recognizer: OfflineTranscriber? = null
+    private var streamingRecognizer: StreamingTranscriber? = null
     private var activeOnboardKind = VoiceModelKind.MOONSHINE
     @Volatile private var onboardLanguage = ""
     private var activeOnboardLanguage = ""
@@ -170,6 +177,8 @@ class VoiceCaptureSession(
     private var currentSegmentTranscript = ""
     private var lastTranscriptDecodeAtMs: Long = 0
     private var lastTranscript = ""
+    private var streamingAcceptedSampleCount = 0L
+    private var streamingFirstPartialLogged = false
     @Volatile
     private var saveRecordings = false
     @Volatile
@@ -407,7 +416,11 @@ class VoiceCaptureSession(
             if (currentMode == Mode.ONBOARD) {
                 emitStatus("Preparing transcription model...")
                 timing("recognizer_start")
-                recognizer = host.loadTranscriber(currentOnboardKind, activeOnboardLanguage)
+                if (currentOnboardKind == VoiceModelKind.ZIPFORMER_RU) {
+                    streamingRecognizer = host.loadStreamingTranscriber(currentOnboardKind)
+                } else {
+                    recognizer = host.loadTranscriber(currentOnboardKind, activeOnboardLanguage)
+                }
                 timing("recognizer_ready")
                 if (!started) return
                 if (!activePhoneMic && audioQueue.droppedCount > 0) {
@@ -447,7 +460,11 @@ class VoiceCaptureSession(
             // Button released / stop requested: emit one final full-utterance
             // transcript so the UI can freeze it.
             if (currentMode == Mode.ONBOARD) {
-                decodeTranscript(true)
+                if (currentOnboardKind == VoiceModelKind.ZIPFORMER_RU) {
+                    finishStreamingTranscript()
+                } else {
+                    decodeTranscript(true)
+                }
             }
         } catch (error: Throwable) {
             logError("Voice control failed", error)
@@ -603,6 +620,12 @@ class VoiceCaptureSession(
     }
 
     private fun processRecognizer(samples: FloatArray) {
+        if (activeOnboardKind == VoiceModelKind.ZIPFORMER_RU) {
+            val current = streamingRecognizer ?: return
+            streamingAcceptedSampleCount += samples.size
+            processStreamingResult(current.accept(samples, samples.size), false)
+            return
+        }
         appendTranscriptSamples(samples)
         // Each Whisper call re-encodes the whole buffer plus ~10s of tail padding,
         // so it skips the live-partial redecode Moonshine does on this interval and
@@ -619,6 +642,53 @@ class VoiceCaptureSession(
             decodeTranscript(false)
             lastTranscriptDecodeAtMs = now
         }
+    }
+
+    /**
+     * Applies sherpa's complete-current-stream result to the UI's REPLACE semantics. Empty
+     * regressions are ignored, endpoints are committed once, and identical text is never re-sent.
+     */
+    private fun processStreamingResult(result: StreamingRecognition, isFinal: Boolean) {
+        val candidate = result.text.trim()
+        if (candidate.isNotEmpty()) {
+            currentSegmentTranscript = candidate
+        }
+        if (result.isEndpoint) {
+            if (currentSegmentTranscript.isNotEmpty()) {
+                committedTranscript = joinTranscript(committedTranscript, currentSegmentTranscript)
+                currentSegmentTranscript = ""
+            }
+            if (!isFinal) streamingRecognizer?.reset()
+        }
+        val text = joinTranscript(committedTranscript, currentSegmentTranscript)
+        val now = platform.elapsedRealtimeMs()
+        val cadenceElapsed = lastTranscriptDecodeAtMs == 0L ||
+            now - lastTranscriptDecodeAtMs >= STREAMING_PARTIAL_EMIT_INTERVAL_MS
+        val textChanged = text.isNotEmpty() && text != lastTranscript
+        if (isFinal || (textChanged && (result.isEndpoint || cadenceElapsed))) {
+            if (!streamingFirstPartialLogged && text.isNotEmpty()) {
+                streamingFirstPartialLogged = true
+                logInfo("Zipformer firstPartialMs=" + (now - captureRequestedAtMs))
+            }
+            lastTranscript = text
+            lastTranscriptDecodeAtMs = now
+            logInfo(
+                "Zipformer decode final=" + isFinal +
+                    " endpoint=" + result.isEndpoint +
+                    " audioSec=" + formatFixed(streamingAcceptedSampleCount / SAMPLE_RATE.toDouble(), 2) +
+                    " textLen=" + text.length,
+            )
+            emitTranscript(text, isFinal)
+        }
+    }
+
+    private fun finishStreamingTranscript() {
+        val current = streamingRecognizer
+        if (current == null) {
+            emitTranscript(lastTranscript, true)
+            return
+        }
+        processStreamingResult(current.finish(), true)
     }
 
     private fun appendTranscriptSamples(samples: FloatArray) {
@@ -722,6 +792,8 @@ class VoiceCaptureSession(
         committedTranscript = ""
         currentSegmentTranscript = ""
         lastTranscriptDecodeAtMs = 0
+        streamingAcceptedSampleCount = 0
+        streamingFirstPartialLogged = false
     }
 
     private fun emitPcm(pcm: ShortArray, count: Int) {
@@ -805,6 +877,8 @@ class VoiceCaptureSession(
     private fun releaseRecognizer() {
         recognizer?.release()
         recognizer = null
+        streamingRecognizer?.release()
+        streamingRecognizer = null
     }
 
     private fun releaseDecoder() {

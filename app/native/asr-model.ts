@@ -9,7 +9,7 @@ declare const java: any;
  * than bundled in the APK; FaceclawVoiceController reads the files from the
  * directory each model's `dirName` names.
  *
- * Three models, same download/verification flow:
+ * Four models, same download/verification flow:
  *  - "moonshine": the original on-device option (three files). The model is
  *    no longer bundled in the APK; it is fetched into the same filesDir
  *    location that earlier releases copied the bundled files to, so
@@ -31,13 +31,16 @@ declare const java: any;
  *  - "whisper-base": multilingual base int8, pinned revision; Russian,
  *    English or auto language in the existing sherpa backend. See
  *    notes/voice-stt-smoke-results.md for measured limits (including mixed speech).
+ *  - "zipformer-small-ru": the experimental streaming Russian transducer. It
+ *    produces live partials from the same 16 kHz PCM stream and is kept as a
+ *    separate provider rather than replacing Whisper.
  *
  * Mirrors the on-phone assistant model flow in llama.ts, except each model
  * here is multiple files rather than one; they download sequentially through
  * FaceclawModelDownloader (resume + pinned sha256 per file).
  */
 
-export type AsrModelId = "moonshine" | "whisper-base-en" | "whisper-base";
+export type AsrModelId = "moonshine" | "whisper-base-en" | "whisper-base" | "zipformer-small-ru";
 
 type AsrModelFile = {
   name: string;
@@ -120,6 +123,20 @@ export const ASR_MODELS: Record<AsrModelId, AsrModelDef> = {
     ],
     totalBytes: 160609290,
   },
+  "zipformer-small-ru": {
+    label: "Zipformer Streaming (Russian, small INT8)",
+    dirName: "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16",
+    // Pinned official sherpa-onnx maintainer export. Large-file hashes are the
+    // Hugging Face LFS SHA-256 values; tokens.txt was downloaded and hashed locally.
+    baseUrl: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16/resolve/31fa603e4f31279c6e1f7600fed13dc4312663ab/",
+    files: [
+      { name: "encoder.int8.onnx", sha256: "e0db705e94ec35d803b1df4f40cda23d064e1142977c80ab288430b109777a9d", sizeBytes: 26214060 },
+      { name: "decoder.onnx", sha256: "89b3088a9e20e1ef7f2e85ce1a3478afe6a9c4ac57369cabcc4beb8e95328ea0", sizeBytes: 2093080 },
+      { name: "joiner.int8.onnx", sha256: "b55784b071ab7512eab4c7c44e4f5478284ef33c83562cc6a249b972515a31e5", sizeBytes: 259417 },
+      { name: "tokens.txt", sha256: "93bbbc0bae6b78c0bbb743d4aa9fded3bb5ff3aac5f0200e3a769a5a05e0fdf6", sizeBytes: 6388 },
+    ],
+    totalBytes: 28572945,
+  },
 };
 
 export type AsrModelState = {
@@ -145,6 +162,7 @@ const runtimes: Record<AsrModelId, ModelRuntime> = {
   moonshine: freshRuntime(),
   "whisper-base-en": freshRuntime(),
   "whisper-base": freshRuntime(),
+  "zipformer-small-ru": freshRuntime(),
 };
 
 function modelDirPath(id: AsrModelId): string {

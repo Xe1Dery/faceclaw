@@ -31,7 +31,7 @@ export type VoiceControlState = {
 // renamed, since it's a persisted settings value on real installs already.
 // "whisper-server" is a self-hosted OpenAI-compatible Whisper over HTTP
 // (whisper-server-stt.ts).
-export type VoiceProviderKind = "onboard" | "onboard-whisper" | "onboard-whisper-multilingual" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
+export type VoiceProviderKind = "onboard" | "onboard-whisper" | "onboard-whisper-multilingual" | "onboard-zipformer-ru" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
 
 export type VoiceTranscriptEvent = CloudSttTranscriptEvent & {
   /**
@@ -396,7 +396,8 @@ export class FaceclawVoiceControlBridge {
     // Which on-device model to load; a no-op setter for every provider except
     // "onboard-whisper" (FaceclawVoiceController defaults to Moonshine).
     this.controller?.setOnboardModelKind(options.provider === "onboard-whisper-multilingual" ? "whisper-multilingual"
-      : options.provider === "onboard-whisper" ? "whisper" : "moonshine");
+      : options.provider === "onboard-whisper" ? "whisper"
+        : options.provider === "onboard-zipformer-ru" ? "zipformer-ru" : "moonshine");
     this.controller?.setOnboardLanguage(options.provider === "onboard-whisper-multilingual" ? options.language ?? "" : "");
     const captureId = this.nextNativeCaptureId++;
     this.nativeCaptureFinished = new Promise((resolve) => { this.nativeCaptureResolvers.set(captureId, resolve); });

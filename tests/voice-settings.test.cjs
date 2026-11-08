@@ -34,6 +34,8 @@ test('WS defaults and legacy explicit ports survive; transport and language pers
   assert.equal(api.onboardWhisperLanguageSetting.get(), 'ru');
   api.onboardWhisperLanguageSetting.set('auto');
   assert.equal(settings(store).onboardWhisperLanguageSetting.get(), 'auto');
+  api.voiceProviderSetting.set('onboard-zipformer-ru');
+  assert.equal(settings(store).voiceProviderSetting.get(), 'onboard-zipformer-ru');
   api.assistantBridgePortSetting.set('');
   assert.equal(api.assistantBridgePortSetting.displayValue(), '443 (automatic)');
 });

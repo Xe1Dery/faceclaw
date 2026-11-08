@@ -9,6 +9,7 @@ enum class VoiceModelKind {
     MOONSHINE,
     WHISPER,
     WHISPER_MULTILINGUAL,
+    ZIPFORMER_RU,
 }
 
 /**
@@ -20,6 +21,24 @@ enum class VoiceModelKind {
 interface OfflineTranscriber {
     /** Returns the trimmed text for [count] float samples at 16 kHz, or "" when nothing was recognized. */
     fun recognize(samples: FloatArray, count: Int): String
+
+    fun release()
+}
+
+/** Current best text from an online recognizer and whether it reached an internal endpoint. */
+data class StreamingRecognition(val text: String, val isEndpoint: Boolean = false)
+
+/**
+ * Incremental recognizer fed with consecutive 16 kHz float PCM chunks. Results use REPLACE
+ * semantics for the current stream; [reset] starts a fresh stream after an endpoint.
+ */
+interface StreamingTranscriber {
+    fun accept(samples: FloatArray, count: Int): StreamingRecognition
+
+    /** Flushes the current stream after microphone capture stops. */
+    fun finish(): StreamingRecognition
+
+    fun reset()
 
     fun release()
 }

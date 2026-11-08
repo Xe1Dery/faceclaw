@@ -150,6 +150,7 @@ function settingsSections(): SettingsSection[] {
         asrModelMenuItem("moonshine"),
         asrModelMenuItem("whisper-base-en"),
         asrModelMenuItem("whisper-base"),
+        asrModelMenuItem("zipformer-small-ru"),
         enumSettingMenuItem(onboardWhisperLanguageSetting),
       ],
     },

@@ -935,7 +935,7 @@ export function effectiveRingConnectionMode(): RingConnectionMode {
 // keeps its name (it's a persisted setting on real installs) but its label
 // below now says "OpenAI" to tell the two apart in the picker.
 // "whisper-server" is a self-hosted OpenAI-compatible Whisper (e.g. vLLM).
-export type VoiceProvider = "onboard" | "onboard-whisper" | "onboard-whisper-multilingual" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
+export type VoiceProvider = "onboard" | "onboard-whisper" | "onboard-whisper-multilingual" | "onboard-zipformer-ru" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
 
 // On iOS "onboard" is Apple's on-device recognizer, and there is no
 // "onboard-whisper" (the sherpa-onnx models are Android-only).
@@ -943,6 +943,7 @@ const voiceProviderLabels: Record<VoiceProvider, string> = {
   onboard: global.isIOS ? "On-device (Apple)" : "On-device (Moonshine)",
   "onboard-whisper": "On-device (Whisper English)",
   "onboard-whisper-multilingual": "On-device (Whisper multilingual)",
+  "onboard-zipformer-ru": "On-device (Zipformer Russian, streaming)",
   elevenlabs: "ElevenLabs",
   whisper: "OpenAI (Whisper)",
   soniox: "Soniox",
@@ -956,7 +957,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   defaultValue: "onboard",
   values: global.isIOS
     ? ["onboard", "elevenlabs", "whisper", "soniox", "whisper-server"]
-    : ["onboard", "onboard-whisper", "onboard-whisper-multilingual", "elevenlabs", "whisper", "soniox", "whisper-server"],
+    : ["onboard", "onboard-whisper", "onboard-whisper-multilingual", "onboard-zipformer-ru", "elevenlabs", "whisper", "soniox", "whisper-server"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;

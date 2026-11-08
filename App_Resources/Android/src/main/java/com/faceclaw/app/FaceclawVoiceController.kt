@@ -45,6 +45,14 @@ class FaceclawVoiceController(context: Context) {
             "base.en-decoder.int8.onnx",
             "base.en-tokens.txt"
         )
+        private const val ASR_ZIPFORMER_RU_MODEL_DIR =
+            "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16"
+        private val ASR_ZIPFORMER_RU_MODEL_FILES = arrayOf(
+            "encoder.int8.onnx",
+            "decoder.onnx",
+            "joiner.int8.onnx",
+            "tokens.txt"
+        )
         // 50 ms chunks match the G2 packet cadence the rest of the pipeline
         // (endpointing, transcript pacing) is tuned for.
         private const val PHONE_MIC_CHUNK_SAMPLES = SAMPLE_RATE / 20
@@ -88,13 +96,20 @@ class FaceclawVoiceController(context: Context) {
     private var communicator: FaceclawBleCommunicator? = null
 
     private val warmTranscriber = WarmTranscriber()
+    private val warmStreamingTranscriber = WarmStreamingTranscriber()
     @Volatile private var selectedKind = "moonshine"
     @Volatile private var language = ""
     private val memoryCallbacks = object : ComponentCallbacks2 {
         override fun onConfigurationChanged(newConfig: Configuration) {}
-        override fun onLowMemory() { warmTranscriber.invalidate() }
+        override fun onLowMemory() {
+            warmTranscriber.invalidate()
+            warmStreamingTranscriber.invalidate()
+        }
         override fun onTrimMemory(level: Int) {
-            if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) warmTranscriber.invalidate()
+            if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+                warmTranscriber.invalidate()
+                warmStreamingTranscriber.invalidate()
+            }
         }
     }
 
@@ -151,6 +166,19 @@ class FaceclawVoiceController(context: Context) {
             }
         }
 
+        override fun loadStreamingTranscriber(kind: VoiceModelKind): StreamingTranscriber {
+            require(kind == VoiceModelKind.ZIPFORMER_RU) { "Unsupported streaming model: $kind" }
+            val modelDir = findAsrModelDir(kind) ?: throw IllegalStateException("voice model missing")
+            val files = modelDir.listFiles()?.sortedBy { it.name } ?: emptyList()
+            val key = kind.name + ":" + modelDir.absolutePath +
+                files.joinToString { "${it.name}:${it.length()}:${it.lastModified()}" }
+            return warmStreamingTranscriber.acquire(key) {
+                AndroidSpeechEngines.SherpaStreamingTranscriber(
+                    AndroidSpeechEngines.streamingRecognizerConfig(modelDir),
+                )
+            }
+        }
+
         override fun speakerEmbedder(modelPath: String): SpeakerEmbedder {
             val cached = cachedSpeakerId(modelPath)
             // The cached model outlives the session; never release it here.
@@ -186,13 +214,17 @@ class FaceclawVoiceController(context: Context) {
 
     /**
      * Which on-device model {@link #start}("onboard") should load: "whisper"
-     * selects the second on-device model (sherpa-onnx offline Whisper); any
-     * other value (including null/absent) keeps the existing Moonshine model.
+     * and "whisper-multilingual" select offline Whisper; "zipformer-ru"
+     * selects the experimental Russian streaming recognizer; any other value
+     * (including null/absent) keeps the existing Moonshine model.
      * Must be set before {@link #start}; has no effect in CLOUD mode.
      */
     fun setOnboardModelKind(kind: String?) {
         val next = kind ?: "moonshine"
-        if (next != selectedKind) warmTranscriber.invalidate()
+        if (next != selectedKind) {
+            warmTranscriber.invalidate()
+            warmStreamingTranscriber.invalidate()
+        }
         selectedKind = next
         session.setOnboardModelKind(kind)
     }
@@ -267,6 +299,7 @@ class FaceclawVoiceController(context: Context) {
 
     fun close() {
         warmTranscriber.close()
+        warmStreamingTranscriber.close()
         appContext.unregisterComponentCallbacks(memoryCallbacks)
         session.close()
     }
@@ -304,8 +337,12 @@ class FaceclawVoiceController(context: Context) {
     private fun findAsrModelDir(kind: VoiceModelKind): File? {
         val whisper = kind == VoiceModelKind.WHISPER
         val multilingual = kind == VoiceModelKind.WHISPER_MULTILINGUAL
-        val dirName = if (multilingual) "sherpa-onnx-whisper-base-int8" else if (whisper) ASR_WHISPER_MODEL_DIR else ASR_MODEL_DIR
-        val fileNames = if (multilingual) arrayOf("base-encoder.int8.onnx", "base-decoder.int8.onnx", "base-tokens.txt")
+        val streamingRussian = kind == VoiceModelKind.ZIPFORMER_RU
+        val dirName = if (streamingRussian) ASR_ZIPFORMER_RU_MODEL_DIR
+            else if (multilingual) "sherpa-onnx-whisper-base-int8"
+            else if (whisper) ASR_WHISPER_MODEL_DIR else ASR_MODEL_DIR
+        val fileNames = if (streamingRussian) ASR_ZIPFORMER_RU_MODEL_FILES
+            else if (multilingual) arrayOf("base-encoder.int8.onnx", "base-decoder.int8.onnx", "base-tokens.txt")
             else if (whisper) ASR_WHISPER_MODEL_FILES else ASR_MODEL_FILES
         val modelDir = File(appContext.filesDir, ASR_ROOT + File.separator + dirName)
         for (fileName in fileNames) {

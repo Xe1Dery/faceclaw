@@ -231,4 +231,8 @@ test('multilingual local capture passes model and language to native and keys sh
   bridge.startPushToTalk({ provider: 'onboard-whisper' });
   assert.equal(controller.model, 'whisper');
   assert.equal(controller.language, '');
+  bridge.stopPushToTalk(); controller.listener.onStopped(controller.captureId);
+  bridge.startPushToTalk({ provider: 'onboard-zipformer-ru' });
+  assert.equal(controller.model, 'zipformer-ru');
+  assert.equal(controller.language, '');
 });

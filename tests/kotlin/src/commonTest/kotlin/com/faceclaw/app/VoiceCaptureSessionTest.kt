@@ -52,10 +52,29 @@ class VoiceCaptureSessionTest {
         override fun release() { released = true }
     }
 
+    private class FakeStreamingTranscriber(
+        private val partials: List<StreamingRecognition>,
+        private val final: StreamingRecognition,
+    ) : StreamingTranscriber {
+        var accepted = 0
+        var resets = 0
+        var released = false
+
+        override fun accept(samples: FloatArray, count: Int): StreamingRecognition =
+            partials.getOrElse(accepted++) { partials.lastOrNull() ?: StreamingRecognition("") }
+
+        override fun finish(): StreamingRecognition = final
+
+        override fun reset() { resets++ }
+
+        override fun release() { released = true }
+    }
+
     private class FakeHost(
         val platform: ProtocolPlatform,
         var mic: PcmAudioSource? = null,
         var transcriber: OfflineTranscriber? = null,
+        var streamingTranscriber: StreamingTranscriber? = null,
         var hasModel: Boolean = true,
         var embedding: FloatArray? = null,
         var g2Ready: Boolean = false,
@@ -67,6 +86,7 @@ class VoiceCaptureSessionTest {
         var g2Stops = 0
         val recordings = mutableListOf<ByteArray>()
         val transcriberRequests = mutableListOf<Pair<VoiceModelKind, String>>()
+        val streamingTranscriberRequests = mutableListOf<VoiceModelKind>()
         override fun onSessionStarting() { onStarting?.invoke() }
         override fun isG2SessionReady(): Boolean = g2Ready
         override fun isG2AudioCaptureActive(): Boolean = packetListener != null
@@ -101,6 +121,11 @@ class VoiceCaptureSessionTest {
         override fun loadTranscriber(kind: VoiceModelKind, language: String): OfflineTranscriber {
             transcriberRequests.add(kind to language)
             return loadTranscriber(kind)
+        }
+        override fun loadStreamingTranscriber(kind: VoiceModelKind): StreamingTranscriber {
+            onLoad?.invoke()
+            streamingTranscriberRequests.add(kind)
+            return streamingTranscriber ?: error("no streaming transcriber")
         }
         override fun speakerEmbedder(modelPath: String): SpeakerEmbedder = object : SpeakerEmbedder {
             override fun embed(pcm16le: ByteArray, sampleRate: Int): FloatArray? = embedding
@@ -226,6 +251,45 @@ class VoiceCaptureSessionTest {
         assertEquals(170, events.pcmChunks.size)
         assertEquals("x x", VoiceCaptureSession.joinTranscript("x", "x"))
         assertEquals("x, y", VoiceCaptureSession.joinTranscript("x", ", y"))
+    }
+
+    @Test
+    fun streamingTranscriptAppearsDuringSpeechWithoutDuplicatesOrFlicker() {
+        val platform = ShiftedPlatform(testPlatform())
+        val mic = ScriptedMic(List(6) { 3000 }) { platform.offsetMs += 200 }
+        val transcriber = FakeStreamingTranscriber(
+            listOf(
+                StreamingRecognition(""),
+                StreamingRecognition("привет"),
+                StreamingRecognition("привет"),
+                StreamingRecognition("привет мир", isEndpoint = true),
+                StreamingRecognition("", isEndpoint = true),
+                StreamingRecognition("как"),
+            ),
+            StreamingRecognition("как дела"),
+        )
+        val host = FakeHost(platform, mic = mic, streamingTranscriber = transcriber)
+        val events = Events()
+        val session = session(host, platform, "voice-test-streaming")
+        session.setListener(events)
+        session.setUsePhoneMic(true)
+        session.setOnboardModelKind("zipformer-ru")
+        session.start("onboard", 71)
+        assertTrue(events.stoppedLatch.await(5000))
+
+        assertEquals(listOf(VoiceModelKind.ZIPFORMER_RU), host.streamingTranscriberRequests)
+        assertEquals<List<Pair<String?, Boolean>>>(
+            listOf(
+                "привет" to false,
+                "привет мир" to false,
+                "привет мир как" to false,
+                "привет мир как дела" to true,
+            ),
+            events.transcripts,
+        )
+        assertEquals(2, transcriber.resets)
+        assertTrue(transcriber.released)
+        assertTrue(logs.any { it.startsWith("I Zipformer firstPartialMs=") }, logs.toString())
     }
 
     @Test

@@ -269,6 +269,17 @@ def faceclawVersionCode = {
   def parts = (faceclawVersionName.split('-')[0].tokenize('.') + ["0", "0"]).take(3)*.toInteger()
   return parts[0] * 10000 + parts[1] * 100 + parts[2]
 }()
+def faceclawVersionCodeOverride = System.getenv("FACECLAW_VERSION_CODE")
+if (faceclawVersionCodeOverride != null && !faceclawVersionCodeOverride.trim().isEmpty()) {
+  if (!(faceclawVersionCodeOverride ==~ /[1-9][0-9]*/)) {
+    throw new GradleException("FACECLAW_VERSION_CODE must be a positive integer")
+  }
+  def requestedVersionCode = faceclawVersionCodeOverride.toInteger()
+  if (requestedVersionCode < faceclawVersionCode) {
+    throw new GradleException("FACECLAW_VERSION_CODE $requestedVersionCode is below version $faceclawVersionName ($faceclawVersionCode)")
+  }
+  faceclawVersionCode = requestedVersionCode
+}
 
 android {
   compileSdkVersion 35
