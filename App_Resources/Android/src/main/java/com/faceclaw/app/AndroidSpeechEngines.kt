@@ -145,8 +145,13 @@ internal object AndroidSpeechEngines {
 
         override fun reset() {
             val currentRecognizer = recognizer ?: return
-            val currentStream = stream ?: return
-            currentRecognizer.reset(currentStream)
+            // Recreate the stream instead of trusting OnlineRecognizer.reset() to
+            // flush every pending feature/frame: a warm-cache session must never
+            // inherit the previous session's undecoded tail, which would show up
+            // as the previous phrase's last words at the start of the next one.
+            val oldStream = stream
+            stream = currentRecognizer.createStream()
+            oldStream?.release()
         }
 
         private fun decodeReady(): StreamingRecognition {

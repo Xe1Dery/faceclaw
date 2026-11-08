@@ -155,6 +155,10 @@ class DroppingPacketQueue<T : Any>(private val capacity: Int, platform: Protocol
         }
     }
 
+    /** Number of buffered items. Unlike [droppedCount], this is not reset by [clear]. */
+    val size: Int
+        get() = condition.withLock { items.size }
+
     fun clear() {
         condition.withLock {
             items.clear()

@@ -69,6 +69,10 @@ class VoiceCaptureSession(
         const val EXPECTED_PACKET_INTERVAL_MS = 50
         const val LATE_PACKET_INTERVAL_MS = 90
         const val STATS_INTERVAL_MS = 5_000
+        // How long the worker keeps consuming packets after a stop, so the
+        // words spoken around button release reach the recognizer before
+        // finish(). Packets still queued when this window closes are dropped.
+        const val AUDIO_DRAIN_GRACE_MS = 600
         // Push-to-talk utterance boundaries come from the button. We re-decode the
         // current audio segment in full for each live partial and emit the complete
         // utterance text (REPLACE, never a delta). The sherpa Moonshine v2 decoder
@@ -144,6 +148,11 @@ class VoiceCaptureSession(
     private var listener: FaceclawVoiceControllerListener? = null
     @Volatile
     private var started = false
+    // Set while the worker drains the audio tail after a stop: the packet
+    // sink keeps queueing even though `started` is already false, so the last
+    // words survive the BLE disable round-trip and reach the recognizer.
+    @Volatile
+    private var draining = false
     // Set once the worker has the mic enabled for this session. Read and
     // written under `lock`, so it flips with `started` atomically.
     private var audioStarted = false
@@ -359,6 +368,11 @@ class VoiceCaptureSession(
                 return
             }
             started = false
+            // Arm the tail drain in the same critical section: packets that
+            // already passed the sink guard keep queueing until the worker
+            // consumes them, instead of slipping past both checks into the
+            // next session's queue.
+            draining = true
             finished = workerFinished
             workerName = workerThreadName
         }
@@ -474,6 +488,7 @@ class VoiceCaptureSession(
             writeRecordingIfAny()
             releaseRecognizer()
             releaseDecoder()
+            draining = false
             audioQueue.clear()
             verifyBuffer = null
             resetTranscriptState()
@@ -520,22 +535,42 @@ class VoiceCaptureSession(
         val enabled = source.start(object : FaceclawAudioPacketListener {
             override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
                 lock.withLock {
-                    if (activePacketSource === source) queueAudioPacket(data, arm, arrivalMs)
+                    if (activePacketSource === source || (draining && activePacketSource == null)) {
+                        queueAudioPacket(data, arm, arrivalMs)
+                    }
                 }
             }
         })
         timing("audio_enable_return")
         if (!started) { source.stop(); return false }
+        // The glasses keep streaming for a moment after the previous session's
+        // disable command, so packets from the last utterance can arrive during
+        // the gap between sessions and sit in the queue by enable time. Drop
+        // them here; they would otherwise transcribe as the head of this
+        // session's speech.
+        audioQueue.clear()
         return enabled
     }
 
     private fun processG2Audio() {
         var pcm = ShortArray(PACKET_SAMPLES)
-        while (started) {
+        // `draining` keeps the loop alive after a stop so queued tail packets
+        // flow through the normal pipeline below instead of being discarded.
+        while (started || draining) {
             val currentDecoder = packetDecoder ?: return
             if (pcm.size < currentDecoder.maxSamplesPerPacket) pcm = ShortArray(currentDecoder.maxSamplesPerPacket)
             val packet = takeAudioPacket()
             if (packet == null) {
+                if (!started) {
+                    // Stop requested: the BLE disable command has been sent, but
+                    // packets of the final phrase may already be queued or in
+                    // flight. Give the source a short grace window to deliver
+                    // them, then drain the queue so the tail reaches the
+                    // recognizer before finish() instead of being lost (or
+                    // leaking into the next session).
+                    drainAudioTail(currentDecoder, pcm)
+                    return
+                }
                 if (activePacketSource?.isActive() != true) {
                     emitStatus("G2 microphone disconnected.")
                     return
@@ -888,7 +923,7 @@ class VoiceCaptureSession(
 
     /** Called from the BLE notification thread for every glasses mic packet. */
     fun queueAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
-        if (!started || data == null) {
+        if (data == null || (!started && !draining)) {
             return
         }
         if (queuedPackets == 0L) timing("first_packet")
@@ -916,6 +951,44 @@ class VoiceCaptureSession(
             maybeEmitAudioStats(false)
         }
         return packet
+    }
+
+    /**
+     * After a stop, keep consuming packets for a short grace window: the BLE
+     * disable command has been sent but the glasses keep streaming for a
+     * moment, and the last words of the utterance are exactly what finish()
+     * needs to transcribe. The sink keeps queueing while [draining] is set.
+     * Anything still queued when the window closes is dropped, so nothing can
+     * leak into the next session.
+     */
+    private fun drainAudioTail(decoder: AudioPacketDecoder, pcm: ShortArray) {
+        draining = true
+        try {
+            val deadline = platform.elapsedRealtimeMs() + AUDIO_DRAIN_GRACE_MS
+            while (true) {
+                val packet = audioQueue.take(50) { draining }
+                if (packet != null) {
+                    val count = decoder.decodePacket(packet.data, pcm)
+                    if (count > 0) {
+                        decodedSamples += count.toLong()
+                        val angleDegrees = decoder.lastAngleDegrees
+                        val ssr = decoder.lastSsr
+                        if (!beamFilterEnabled || ssr <= 0 || withinBeam(angleDegrees)) {
+                            processPcmChunk(pcm, count, angleDegrees, ssr, decoder.hasFrameMeta)
+                        }
+                    }
+                    continue
+                }
+                if (platform.elapsedRealtimeMs() >= deadline) {
+                    break
+                }
+            }
+        } catch (error: Throwable) {
+            logWarn("audio tail drain failed (${error.message})")
+        } finally {
+            draining = false
+            audioQueue.clear()
+        }
     }
 
     private fun resetAudioStats() {

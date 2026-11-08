@@ -442,6 +442,51 @@ class VoiceCaptureSessionTest {
     }
 
     @Test
+    fun stopDrainsQueuedTailPacketsBeforeFinishing() {
+        val platform = testPlatform()
+        val host = FakeHost(platform, g2Ready = true)
+        val events = Events()
+        val session = session(host, platform, "voice-test-drain")
+        session.setListener(events)
+        session.start("cloud", 53)
+        val deadline = platform.elapsedRealtimeMs() + 3000
+        while (host.packetListener == null && platform.elapsedRealtimeMs() < deadline) sleepMs(5)
+        val listener = host.packetListener!!
+        // Queue a tail burst and stop without letting the worker consume it:
+        // the drain must deliver the queued packets to the pipeline anyway.
+        repeat(4) { listener.onAudioPacket(packet(10 + it, 0, 0), "L", 1000L + it * 50) }
+        session.stop()
+        assertTrue(events.stoppedLatch.await(3000))
+        assertTrue(events.pcmChunks.size >= 4, "drained ${events.pcmChunks.size} chunks")
+        assertEquals(10, events.pcmChunks[0][0].toInt())
+    }
+
+    @Test
+    fun packetsArrivingAfterStopCannotLeakIntoTheNextSession() {
+        val platform = testPlatform()
+        val host = FakeHost(platform, g2Ready = true)
+        val events = Events()
+        val session = session(host, platform, "voice-test-leak")
+        session.setListener(events)
+        session.start("cloud", 54)
+        val deadline = platform.elapsedRealtimeMs() + 3000
+        while (host.packetListener == null && platform.elapsedRealtimeMs() < deadline) sleepMs(5)
+        val listener = host.packetListener!!
+        session.stop()
+        assertTrue(events.stoppedLatch.await(3000))
+        // The glasses keep streaming briefly after the disable command.
+        listener.onAudioPacket(packet(77, 0, 0), "L", 2000)
+        val nextEvents = Events()
+        session.setListener(nextEvents)
+        session.start("cloud", 55)
+        val nextDeadline = platform.elapsedRealtimeMs() + 3000
+        while (host.packetListener == null && platform.elapsedRealtimeMs() < nextDeadline) sleepMs(5)
+        session.stop()
+        assertTrue(nextEvents.stoppedLatch.await(3000))
+        assertTrue(nextEvents.pcmChunks.none { it[0].toInt() == 77 }, "stale packet leaked into next session")
+    }
+
+    @Test
     fun modelAndLanguageAreSnapshottedUntilTheNextSession() {
         val platform = testPlatform()
         val ready = Latch(1, platform)
