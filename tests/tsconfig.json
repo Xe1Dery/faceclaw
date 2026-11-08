@@ -82,6 +82,7 @@
     "../app/apps/t3code/t3-client.ts",
     "../app/apps/t3code/t3-transcript.ts",
     "../app/apps/t3code/t3-glance.ts",
-    "../app/apps/t3code/t3-launch.ts"
+    "../app/apps/t3code/t3-launch.ts",
+    "../app/assistant/reminder-intents.ts",
   ]
 }
