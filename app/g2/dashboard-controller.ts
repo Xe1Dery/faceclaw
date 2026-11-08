@@ -64,6 +64,7 @@ import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/
 import { NotificationPopupDelay, notificationPopupDelayMs } from "../ui/shell/notification-popup-delay";
 import { type InputEvent } from "../ui/gestures";
 import { registerSystemTools } from "../assistant/system-tools";
+import { registerReminderTools } from "../assistant/reminder-tools";
 import { updateGlassesPresence } from "./glasses-presence";
 import { timerEngine } from "../apps/timer/timer-engine";
 import { registerNavigateTools } from "../assistant/navigate-tools";
@@ -416,6 +417,9 @@ class DashboardController {
     // The always-available assistant tools (calendar, media, notifications,
     // glasses state) register once at startup, independent of any connection.
     registerSystemTools();
+    // The interactive reminder tools (glasses.reminder_show / _cancel) ride
+    // the same startup lifecycle; they need no app window either.
+    registerReminderTools();
     // nav.* tools launch the Navigate app on demand, so they need launchApp.
     registerNavigateTools((appId) => this.launchApp(appId));
     // roam.* tools launch the Roam app on demand likewise.

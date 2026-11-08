@@ -198,6 +198,7 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
   const modules = {
     "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
     '../assistant/system-tools': { registerSystemTools() {} },
+    '../assistant/reminder-tools': { registerReminderTools() {} },
     '../assistant/window-tools': { registerWindowTools() {} },
     '../assistant/navigate-tools': { registerNavigateTools() {} },
     '../assistant/roam-tools': { registerRoamTools() {} },

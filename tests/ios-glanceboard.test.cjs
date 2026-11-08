@@ -136,6 +136,7 @@ function fixture() {
     "../ui/input-monitor": inputMonitor,
     '../remote/service': { startRemoteInput(host) { remoteHost = host; } },
     '../assistant/system-tools': { registerSystemTools() {} },
+    '../assistant/reminder-tools': { registerReminderTools() {} },
     '../assistant/window-tools': { registerWindowTools() {} },
     '../assistant/navigate-tools': { registerNavigateTools() {} },
     '../assistant/roam-tools': { registerRoamTools() {} },

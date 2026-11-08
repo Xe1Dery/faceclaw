@@ -20,6 +20,7 @@ import {
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
+import { ReminderLayer, type ReminderOutcome, type ReminderRequest } from "./reminder-layer";
 import { KeyboardInputLayer, type KeyboardInputSession, type KeyboardInputVisibility } from "./keyboard-input";
 import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
@@ -514,6 +515,9 @@ class Shell {
   private assistantLayer: AssistantLayer | null = null;
   private readonly assistantActivityListeners = new Set<(event: AssistantActivityEvent) => void>();
   private readonly alertListeners = new Set<(text: string) => void>();
+  // Interactive reminders by id, while their popup is open and awaiting an
+  // answer (see showReminder); a re-show of the same id reuses the open one.
+  private readonly activeReminders = new Map<string, { layer: ReminderLayer; promise: Promise<ReminderOutcome> }>();
   private escapeMenuTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly actions: LayerActions = { ...noopActions };
   private config: ShellConfig = {
@@ -1897,6 +1901,53 @@ class Shell {
     });
     this.stack.push(layer);
     this.config.requestShellRender();
+  }
+
+  /**
+   * Show an interactive reminder (the assistant's glasses.show_reminder tool)
+   * and resolve once with the wearer's answer: a classified voice reply after
+   * a tap, or a non-answer (dismissed / expired / cancelled). The microphone
+   * stays off until a tap; the popup closes itself after `ttlMs` unanswered.
+   * Re-showing an open reminderId returns the same promise instead of stacking
+   * a second popup, so a retrying controller cannot double the window.
+   */
+  showReminder(request: ReminderRequest): Promise<ReminderOutcome> {
+    const open = this.activeReminders.get(request.reminderId);
+    if (open) return open.promise;
+    if (!this.screenOn) this.wake("sidebar");
+    let settlePromise: (outcome: ReminderOutcome) => void = () => {};
+    const promise = new Promise<ReminderOutcome>((resolve) => {
+      settlePromise = resolve;
+    });
+    const layer = new ReminderLayer(
+      request,
+      this.config.actions,
+      () => Boolean(this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()),
+      () => {
+        this.stack.popIfTop((top) => top === layer);
+        this.config.requestShellRender();
+      },
+      (outcome) => {
+        this.activeReminders.delete(request.reminderId);
+        settlePromise(outcome);
+      },
+    );
+    this.activeReminders.set(request.reminderId, { layer, promise });
+    this.stack.push(layer);
+    this.config.requestShellRender();
+    return promise;
+  }
+
+  /**
+   * Withdraw an open reminder by id (the controller retracted it, e.g. the
+   * task was completed elsewhere). Resolves its promise as "cancelled".
+   * Returns false when no reminder with that id is open.
+   */
+  cancelReminder(reminderId: string): boolean {
+    const open = this.activeReminders.get(reminderId);
+    if (!open) return false;
+    open.layer.cancel();
+    return true;
   }
 
   private startEscapeMenuTimer(): void {
