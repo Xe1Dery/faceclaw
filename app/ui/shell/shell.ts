@@ -21,12 +21,12 @@ import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from 
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
 import { DictationBarLayer, DictationRefusalLayer } from "./dictation-bar";
+import { ChatSessionLayer, type ChatMessage } from "./chat-session";
 import { assistantBridge } from "../../assistant/bridge-client";
 import { ReminderLayer, type ReminderOutcome, type ReminderRequest } from "./reminder-layer";
 import { ProactiveDialogLayer, type ProactiveDialogOutcome, type ProactiveDialogRequest } from "./proactive-dialog-layer";
 import { KeyboardInputLayer, type KeyboardInputSession, type KeyboardInputVisibility } from "./keyboard-input";
 import { voiceActivity } from "./voice-activity";
-import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
 import { resolveAssistantModel, type AssistantModel } from "../../assistant/models";
 import { AssistantConversations, type ReasoningLevel } from "../../assistant/conversations";
@@ -518,7 +518,11 @@ class Shell {
     return ready && !this.activeVoiceLayer && !this.activeDictationBar && !this.activeKeyboardLayer &&
       this.stack.isAtBase() && this.isWindowFocused("ai-chat");
   }
-  private assistantLayer: AssistantLayer | null = null;
+  /** The chat session window, while it is on the stack (spec 3). */
+  private assistantLayer: ChatSessionLayer | null = null;
+  /** The session's thread, kept while the window is minimized by sleep so a
+   * wake restores it; cleared on explicit close (spec 3). */
+  private chatHistory: ChatMessage[] = [];
   private readonly assistantActivityListeners = new Set<(event: AssistantActivityEvent) => void>();
   private readonly alertListeners = new Set<(text: string) => void>();
   // Interactive reminders by id, while their popup is open and awaiting an
@@ -842,6 +846,10 @@ class Shell {
     // frame, but its content may be stale (e.g. a running stopwatch).
     this.foregroundWindow()?.requestRender();
     this.syncInputFocus();
+    if (this.pendingChatRestore) {
+      this.pendingChatRestore = false;
+      this.restoreChatWindow();
+    }
     return true;
   }
 
@@ -854,13 +862,20 @@ class Shell {
     this.returnFromStatusItem();
     this.cancelEscapeMenuTimer();
     this.screenOn = false;
+    // The chat window is not an overlay to discard (spec 3): sleep minimizes
+    // it — the thread lives in chatHistory and wake re-opens the window.
+    const minimizedChat = this.assistantLayer !== null;
     this.stack.clearToBase();
     for (const window of this.windows) {
       window.setScreenOn?.(false);
     }
     this.syncInputFocus();
     this.config.onScreenStateChanged(false);
+    if (minimizedChat) this.pendingChatRestore = true;
   }
+
+  /** Set by sleep while the chat window was open; wake re-opens it once. */
+  private pendingChatRestore = false;
 
   /** Foreground and focus a window by id (e.g. a wake path opening content in it). */
   focusWindow(windowId: string): void {
@@ -1609,12 +1624,7 @@ class Shell {
     if (this.activeDictationBar || this.activeVoiceLayer || this.activeKeyboardLayer) return false;
     if (this.foregroundWindow()?.isVoiceCapturing?.()) return false;
     if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
-      const refusal = new DictationRefusalLayer(this.config.actions, interfaceBottom, () => {
-        this.stack.popIfTop((top) => top === refusal);
-        this.config.requestShellRender();
-      });
-      this.stack.push(refusal);
-      this.config.requestShellRender();
+      this.showAssistantNoLink();
       return false;
     }
     if (!this.screenOn) this.wake("sidebar");
@@ -1842,6 +1852,12 @@ class Shell {
   sendToAssistant(text: string, showOverlay = true): void {
     text = text.trim();
     if (!text) return;
+    // The chat window needs the agent link (spec 3): without it the bar
+    // would have refused already; direct backends keep working.
+    if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
+      this.showAssistantNoLink();
+      return;
+    }
     const session = this.ensureAssistantSession();
     if (!session) {
       this.showAlert(this.assistantSetupHint());
@@ -1858,28 +1874,31 @@ class Shell {
     }
     let layer = this.assistantLayer;
     if (!layer) {
-      const created = new AssistantLayer(this.config.actions, {
+      // The chat session window (spec 3): a thread, restored on wake until
+      // it is explicitly closed. Sleep's clear-to-base only minimizes it.
+      const created = new ChatSessionLayer(this.config.actions, {
         onFollowUp: () => this.startAssistantFollowUp(),
         onCancel: () => this.assistantSession?.cancel(),
         onClose: () => this.closeAssistantLayer(),
         onRemoved: () => {
-          // Removed by any path (Done, or the screen sleeping mid-conversation):
-          // stop the turn and drop the overlay reference; keep shared history.
-          this.assistantSession?.cancel();
-          if (this.assistantLayer === created) this.assistantLayer = null;
-          this.emitAssistantActivity({ phase: "closed", text: "" });
+          if (this.assistantLayer === created) {
+            this.assistantLayer = null;
+            this.emitAssistantActivity({ phase: "closed", text: "" });
+          }
         },
-      });
+      }, this.chatHistory);
       layer = created;
       this.assistantLayer = created;
+      this.chatHistory = layer.messages();
       this.stack.push(created);
     }
     this.runAssistantTurn(session, layer, text);
     this.config.requestShellRender();
   }
 
-  private runAssistantTurn(session: AssistantSession, layer: AssistantLayer | null, text: string): void {
+  private runAssistantTurn(session: AssistantSession, layer: ChatSessionLayer | null, text: string): void {
     if (session.isTurnActive()) return;
+    layer?.appendUser(text);
     layer?.startTurn();
     let replySoFar = "";
     this.emitAssistantActivity({ phase: "thinking", text: "" });
@@ -1902,50 +1921,65 @@ class Shell {
   }
 
   /**
-   * Record another utterance in the current assistant conversation. handsFree
-   * (from a wakeword over the overlay) starts the mic immediately; otherwise
-   * (the Follow-up menu button) a click ends the utterance.
+   * Record another utterance in the current assistant conversation: the
+   * dictation bar rises over the chat window (spec 3), and the sent line
+   * continues the same thread.
    */
-  private startAssistantFollowUp(handsFree = false): void {
+  private startAssistantFollowUp(_handsFree = false): void {
     const layer = this.assistantLayer;
     const session = this.assistantSession;
-    if (!layer || !session || this.activeVoiceLayer || this.activeKeyboardLayer) return;
-    const voice = new VoiceInputLayer({
-      actions: this.config.actions,
-      onClosed: () => {
-        if (this.activeVoiceLayer === voice) {
-          this.activeVoiceLayer = null;
-          voiceActivity.setActive(false);
-          this.noteUserActivity();
-        }
-      },
-      dismiss: () => {
-        this.stack.popIfTop((top) => top === voice);
-      },
-      sendTargets: [
-        { id: "assistant", label: "Send", onSend: (text) => this.runAssistantTurn(session, layer, text) },
-      ],
-      finishOnClick: !handsFree,
-      handsFree,
-      autoSend: handsFree && assistantSkipConfirmationSetting.get(),
+    if (!layer || !session) return;
+    this.openAssistantDictation({
+      autoSend: false,
+      onSent: (text) => this.runAssistantTurn(session, layer, text),
     });
-    this.activeVoiceLayer = voice;
-    voiceActivity.setActive(true);
-    this.stack.push(voice);
-    voice.startCapture();
-    this.config.requestShellRender();
   }
 
   private closeAssistantLayer(): boolean {
-    // Popping fires the layer's onRemoved, which cancels the turn and clears
-    // this.assistantLayer. popThrough also closes anything stacked above the
-    // overlay (a follow-up voice dialog, an alert), so a close command works
-    // no matter what the conversation is showing.
+    // An explicit close (●● / Done / the remote's command): cancel any
+    // in-flight turn, drop the thread, and popThrough anything stacked above
+    // the window (a dictation bar, an alert), so a close always lands.
     const layer = this.assistantLayer;
     const closed = layer ? this.stack.popThrough(layer) : false;
+    if (closed) {
+      this.assistantSession?.cancel();
+      this.chatHistory = [];
+    }
     this.noteUserActivity();
     this.config.requestShellRender();
     return closed;
+  }
+
+  /** Re-open the minimized chat window with its thread (spec 3). */
+  private restoreChatWindow(): void {
+    if (this.assistantLayer || this.chatHistory.length === 0) return;
+    const created = new ChatSessionLayer(this.config.actions, {
+      onFollowUp: () => this.startAssistantFollowUp(),
+      onCancel: () => this.assistantSession?.cancel(),
+      onClose: () => this.closeAssistantLayer(),
+      onRemoved: () => {
+        if (this.assistantLayer === created) {
+          this.assistantLayer = null;
+          this.emitAssistantActivity({ phase: "closed", text: "" });
+        }
+      },
+    }, this.chatHistory);
+    created.restoreIdle(this.assistantSession?.isTurnActive() ?? false);
+    this.assistantLayer = created;
+    this.chatHistory = created.messages();
+    this.stack.push(created);
+    this.config.requestShellRender();
+  }
+
+  /** The no-link refusal frame (spec 2): the bar and the chat window both
+   * refuse with this, in the bar's place. */
+  private showAssistantNoLink(): void {
+    const refusal = new DictationRefusalLayer(this.config.actions, interfaceBottom, () => {
+      this.stack.popIfTop((top) => top === refusal);
+      this.config.requestShellRender();
+    });
+    this.stack.push(refusal);
+    this.config.requestShellRender();
   }
 
   /** Show a brief text popup on the lenses (assistant show_alert / notices). */

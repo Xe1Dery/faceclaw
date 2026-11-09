@@ -283,6 +283,13 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
       onRemoved() { this.options.onClosed(); }
     } }, './keyboard-input': {}, './voice-activity': { voiceActivity: { setActive() {} } }, './assistant': {},
     './reminder-layer': {}, './proactive-dialog-layer': {},
+    './chat-session': { ChatSessionLayer: class {
+      constructor(_actions, _callbacks, history) { this.history = history ?? []; }
+      messages() { return this.history; }
+      startTurn() {}
+      appendUser(text) { this.history.push({ role: 'user', text }); }
+      onTextDelta() {} onToolActivity() {} onTurnDone() {} onError() {} restoreIdle() {} onRemoved() {}
+    } },
     './dictation-bar': { DictationBarLayer: class {
       constructor(options) { this.options = options; dictationBars.push(options); }
       startCapture() {}
