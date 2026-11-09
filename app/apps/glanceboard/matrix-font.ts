@@ -22,7 +22,9 @@ export type MatrixFont = {
   glyphs: Record<string, readonly string[]>;
 };
 
-const ASSET_DIR = "apps/glanceboard/assets";
+// Under app/fonts/ because that is what the NativeScript webpack copy rules
+// ship (assets/** and fonts/**); the loader resolves it like the BDF fonts.
+const ASSET_DIR = "fonts/displayotf";
 export const MATRIX_FONT_48 = "displayotf-48.json";
 export const MATRIX_FONT_96 = "displayotf-96.json";
 export const MATRIX_FONT_240 = "displayotf-240.json";

@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TTF = os.path.join(HERE, "DisplayOTF.otf")
-OUT_DIR = os.path.join(HERE, "..", "..", "app", "apps", "glanceboard", "assets")
+OUT_DIR = os.path.join(HERE, "..", "..", "app", "fonts", "displayotf")
 
 SIZES = {48: "displayotf-48.json", 96: "displayotf-96.json", 240: "displayotf-240.json"}
 DIGITS = "0123456789:"
