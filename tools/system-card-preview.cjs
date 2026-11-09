@@ -14,13 +14,12 @@
  *   to mirror exactly for the 24h format this preview assumes.
  *
  * Caveats to read before trusting a preview as gospel:
- * - The device's default UI font is a TTF rasterized in Java; off Android the
- *   shipping code falls back to Terminus, which is what renders here. Layouts
- *   must therefore survive the bitmap-font metrics, not just the TTF default.
- * - The firmware (EvenHub) font the stock G2 clock uses cannot be extracted
- *   off-device, so the "stock clock style" time is approximated with the
- *   largest bundled Terminus face. The preview shows placement and hierarchy,
- *   not the stock glyph shapes.
+ * - The big clock uses Metanart_Big (tools/assets/metanart-big.ttf) as a 1bpp
+ *   matrix font: tools/assets/extract-metanart-font.py rasterizes it once at
+ *   64px, where the face snaps to a 48x48-per-digit grid, and every source
+ *   pixel is then drawn as a 2x2 block — the stock-G2 chunky-digit look.
+ *   Small text (date, status, counter) still renders with the REAL Terminus
+ *   .bdf files the app bundles, via the one @nativescript/core shim below.
  * - Everything outside the battery block is a PROTOTYPE layout, not the
  *   shipping widget: this tool exists to iterate on the design before the
  *   widget code changes.
@@ -66,6 +65,11 @@ const { GrayImage, G2_LENS_WIDTH, G2_LENS_HEIGHT } = require(path.join(BUILD, "g
 const { getTerminusFont } = require(path.join(BUILD, "graphics/bdffont.js"));
 const battery = require(path.join(BUILD, "graphics/battery.js"));
 const UPNG = require("upng-js");
+
+// The Metanart matrix font, extracted by tools/assets/extract-metanart-font.py.
+const MATRIX_FONT = JSON.parse(
+  fs.readFileSync(path.join(ROOT, "tools", "assets", "metanart-font.json"), "utf8"),
+);
 
 const args = process.argv.slice(2);
 const outIndex = args.indexOf("--out");
@@ -168,24 +172,31 @@ function drawTopRow(image, now) {
   drawBatteryBlock(image, W - PAD, PAD + 7);
 }
 
-// --- the clock: stock-style big pixel digits, hours stacked over minutes ----
+// --- the clock: stock-style big matrix digits, hours stacked over minutes ----
+
+const DIGIT_BLOCK = 2; // each matrix-font pixel becomes a 2x2 block (4 pixels)
 
 /**
- * Draw `text` with the Terminus 32 glyphs nearest-neighbour scaled by
- * `scale` (chunky pixels, like the stock G2 clock), centered horizontally at
- * `centerY`. Terminus is 1bpp, so scaling stays crisp at any integer factor.
+ * Draw `text` with the Metanart matrix font, each source pixel a
+ * DIGIT_BLOCK x DIGIT_BLOCK square, centered horizontally at `centerY`.
  */
-function drawBigDigits(image, text, scale, centerY, value) {
-  const glyph = new GrayImage(large.measureText(text), large.lineHeight, 0);
-  glyph.drawText(large, 0, 0, text, value);
-  const baked = glyph.withDrawsBaked();
-  const x0 = Math.round((W - baked.width * scale) / 2);
-  const y0 = Math.round(centerY - (baked.height * scale) / 2);
-  for (let y = 0; y < baked.height; y++)
-    for (let x = 0; x < baked.width; x++) {
-      const v = baked.pixels[y * baked.width + x];
-      if (v) image.fillRect(x0 + x * scale, y0 + y * scale, scale, scale, v);
+function drawMatrixDigits(image, text, centerY, value) {
+  const cellW = MATRIX_FONT.cellW;
+  const cellH = MATRIX_FONT.cellH;
+  const x0 = Math.round((W - text.length * cellW * DIGIT_BLOCK) / 2);
+  const y0 = Math.round(centerY - (cellH * DIGIT_BLOCK) / 2);
+  for (let i = 0; i < text.length; i++) {
+    const rows = MATRIX_FONT.glyphs[text[i]];
+    if (!rows) continue;
+    const gx = x0 + i * cellW * DIGIT_BLOCK;
+    for (let y = 0; y < cellH; y++) {
+      const row = rows[y];
+      for (let x = 0; x < cellW; x++) {
+        if (row[x] === "#")
+          image.fillRect(gx + x * DIGIT_BLOCK, y0 + y * DIGIT_BLOCK, DIGIT_BLOCK, DIGIT_BLOCK, value);
+      }
     }
+  }
 }
 
 // --- the card -----------------------------------------------------------------
@@ -199,13 +210,12 @@ function drawCard(now, opts) {
   drawTopRow(image, now);
   const time = formatClockTime(now);
   const [hh, mm] = time.split(":");
-  const scale = opts.scale ?? 3;
-  const lineGap = Math.round(large.lineHeight * scale * 0.18);
-  const blockH = large.lineHeight * scale * 2 + lineGap;
-  const hourCenter = Math.round(H / 2 - blockH / 4);
-  const minuteCenter = Math.round(H / 2 + blockH / 4);
-  drawBigDigits(image, hh.padStart(2, "0"), scale, hourCenter, 235);
-  drawBigDigits(image, mm.padStart(2, "0"), scale, minuteCenter, 235);
+  const digitH = MATRIX_FONT.cellH * DIGIT_BLOCK;
+  const lineGap = Math.round(digitH * 0.12);
+  const hourCenter = Math.round(H / 2 - digitH / 2 - lineGap / 2);
+  const minuteCenter = Math.round(H / 2 + digitH / 2 + lineGap / 2);
+  drawMatrixDigits(image, hh.padStart(2, "0"), hourCenter, 235);
+  drawMatrixDigits(image, mm.padStart(2, "0"), minuteCenter, 235);
   drawConnection(image, opts.connection, H - PAD);
   drawNotificationCounter(image, opts.notifications, H - PAD);
   return image;
@@ -245,9 +255,9 @@ function writePng(name, image) {
 
 const now = new Date();
 const variants = [
-  { name: "connected", opts: { connection: "ok", notifications: 3, scale: 3 } },
-  { name: "disconnected", opts: { connection: "down", notifications: 0, scale: 3 } },
-  { name: "reconnecting", opts: { connection: "reconnecting", notifications: 12, scale: 3 } },
+  { name: "connected", opts: { connection: "ok", notifications: 3 } },
+  { name: "disconnected", opts: { connection: "down", notifications: 0 } },
+  { name: "reconnecting", opts: { connection: "reconnecting", notifications: 12 } },
 ];
 
 const written = [];
@@ -267,7 +277,7 @@ const html = `<!doctype html>
  .lens{width:640px;height:480px;background:#000;border:1px solid #333;margin:10px 0}
 </style>
 <h1>System Card — редизайн (640×480, отрисовано настоящим прикладным кодом)</h1>
-<p class="note">Время — Terminus 32, увеличенный втрое побитово (1bpp-глифы, масштаб без размытия): крупные пиксельные цифры, часы над минутами, как в стоковых часах G2.
+<p class="note">Время — Metanart_Big как матричный шрифт: 48×48 на цифру, каждый пиксель шрифта = блок 2×2 (цифры 96×96), часы над минутами.
 Батарея справа сверху — настоящая отрисовка из graphics/battery.ts, без изменений.</p>
 ${written
   .map(
