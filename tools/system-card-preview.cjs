@@ -162,6 +162,21 @@ const BELL_VARIANTS = {
     "..........",
     "....##....",
   ],
+  // Tall dome, stroked outline — the outline style in the tall silhouette.
+  "tall-outline": [
+    "....##....",
+    "...#..#...",
+    "..#....#..",
+    "..#....#..",
+    "..#....#..",
+    "..#....#..",
+    ".#......#.",
+    ".#......#.",
+    "#........#",
+    "##########",
+    "..........",
+    "....##....",
+  ],
   // Minimal: no handle, straight flare, short.
   minimal: [
     "...####...",
@@ -191,7 +206,7 @@ const BELL_VARIANTS = {
     "....##....",
   ],
 };
-const BELL_VARIANT = "solid"; // the card draws this one until another is picked
+const BELL_VARIANT = "tall-outline"; // the card draws this one until another is picked
 
 function drawBell(image, x, top, value, rows = BELL_VARIANTS[BELL_VARIANT]) {
   for (let row = 0; row < rows.length; row++) {
