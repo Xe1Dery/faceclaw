@@ -364,6 +364,22 @@ bottom right. New `app/apps/glanceboard/matrix-font.ts` loader, new
 JSONs sat under `app/apps/`, which webpack does not copy — only `assets/**`
 and `fonts/**` ship.)
 
+`dist/Faceclaw-0.8.7-local-817.apk` (SHA-256
+`5c337318c56fb8bb90c61c2322335fde60415566bedcbb1a66da2ba383296402`, signer
+`1b22f1a2…d264`) reworks the card after the on-device comparison of 816:
+the clock draws from the face's LOGICAL 6x9 dot grid (`displayotf-grid.json`,
+sampled once from the clean 240px rasterization by
+`tools/assets/extract-displayotf-font.py`; the three uneven rasters are gone)
+at the biggest pitch that fits, every dot a uniform square with a visible gap
+— in a 288x144 slot that is pitch 6: a 72x114 block dead centre of the slot
+(old: 54x72, pushed left by the weather block). The OpenClaw link is a bare
+square (filled / hollow+centre-dot / hollow) — the RU label text is gone. The
+weather block left the card entirely: `weatherShowOnSystemCardSetting`, its
+menu toggles, and the system-card term of the hourly background-refresh gate
+are deleted (the fetch now follows the status-bar indicator only). Preview
+tool mirrors all of this (`node tools/system-card-preview.cjs`, weather flag
+dropped). Suite 1178/0.
+
 No GitHub Release was created and no APK was uploaded anywhere.
 
 ## Unfinished work — do this next
