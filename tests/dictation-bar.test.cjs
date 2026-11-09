@@ -65,7 +65,7 @@ function layerEnv(opts = {}) {
   function fireSpeechEnd() {
     for (const listener of [...speechEndListeners]) listener();
   }
-  function openBar(overrides = {}) {
+  function openBar(overrides = {}, settle = true) {
     const done = [];
     const dismisses = { count: 0 };
     const layer = new mod.DictationBarLayer({
@@ -75,6 +75,9 @@ function layerEnv(opts = {}) {
       onDone: (outcome) => done.push(outcome),
       ...overrides,
     });
+    // An unlocked bar slides up on open; geometry tests want the rest
+    // place, so run the slide out unless the caller asked for live timers.
+    if (settle) for (let i = 0; i < 8; i++) advance(30);
     return { layer, done, dismisses };
   }
   /** Paint the layer and return the recorded draw ops. */
@@ -223,6 +226,53 @@ test('removal by the shell reports closed, never sent', () => {
   assert.equal(done.length, 1);
   assert.equal(done[0].action, 'closed');
   assert.equal(env.actions.stops, 1);
+});
+
+test('an unlocked bar slides up from the screen bottom to its rest place', () => {
+  const env = layerEnv();
+  const { layer } = env.openBar({}, false); // live timers: catch the slide mid-flight
+  const start = env.paint(layer).find((o) => o.op === 'fillRect');
+  // Slide start: the bar's bottom edge sits on the screen's own bottom edge.
+  assert.equal(start.a[1] + start.a[3], 480);
+  for (let i = 0; i < 8; i++) env.advance(30); // the slide settles within 180ms
+  const rest = env.paint(layer).find((o) => o.op === 'fillRect');
+  assert.equal(rest.a[1] + rest.a[3], 402, 'at rest the bottom edge is the interface bottom');
+});
+
+test('a standalone bar arrives at rest, without a slide', () => {
+  const env = layerEnv();
+  const { layer } = env.openBar({ standalone: true }, false);
+  const image = layer.paint({}, () => null); // standalone: its own opaque canvas
+  const frame = image.ops.find((o) => o.op === 'fillRect');
+  // Locked glasses: the bar rides the screen's brightness transition, so it
+  // is already on the screen's bottom edge at first paint (device issue 3).
+  assert.equal(frame.a[1] + frame.a[3], 480);
+});
+
+test('a bar removed mid-slide stops its timer', () => {
+  const env = layerEnv();
+  const { layer } = env.openBar({}, false);
+  env.advance(60); // partway up
+  layer.onRemoved();
+  const before = env.timers.size;
+  env.advance(1_000);
+  assert.equal(env.timers.size, before, 'the slide timer is gone with the layer');
+});
+
+test('a dead bar takes no input but double-click pops it', () => {
+  const env = layerEnv();
+  const { layer, done, dismisses } = env.openBar();
+  layer.startCapture();
+  env.emitTranscript('фраза', true);
+  env.fireSpeechEnd();
+  layer.handleInput(click); // sent: the bar is dead
+  assert.equal(done.length, 1);
+  assert.equal(dismisses.count, 1);
+  layer.handleInput(click); // a click on the dead bar does nothing
+  assert.equal(done.length, 1);
+  assert.equal(dismisses.count, 1);
+  layer.handleInput(doubleClick); // device issue 5: ●● gives it back
+  assert.equal(dismisses.count, 2);
 });
 
 test('the no-link refusal dismisses itself after three seconds', () => {

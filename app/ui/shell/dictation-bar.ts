@@ -10,6 +10,7 @@ import {
   type InputEvent,
 } from "../gestures";
 import { SHELL_OPAQUE_BLACK } from "./geometry";
+import { startSlideIn } from "./popup-slide";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
 
 /**
@@ -101,6 +102,11 @@ export class DictationBarLayer implements Layer {
   private readonly autoSend: boolean;
   /** Public: the stack reads it to hide the window surfaces under the bar (spec 2). */
   readonly standalone: boolean;
+  /** Slide-in progress, 0 at the screen's bottom edge, 1 at rest (spec 4:
+   * an unlocked bar slides up from below; a standalone one arrives with
+   * the screen's brightness transition instead). */
+  private slide = 1;
+  private cancelSlide: (() => void) | null = null;
 
   constructor(options: DictationBarOptions) {
     this.actions = options.actions;
@@ -109,6 +115,12 @@ export class DictationBarLayer implements Layer {
     this.onDone = options.onDone;
     this.autoSend = options.autoSend ?? false;
     this.standalone = options.standalone ?? false;
+    if (!this.standalone) {
+      this.slide = 0;
+      this.cancelSlide = startSlideIn(this.actions, (offset) => {
+        this.slide = 1 - offset;
+      });
+    }
   }
 
   /** Shell: the bar is on screen — start the mic immediately (hands-free). */
@@ -149,7 +161,10 @@ export class DictationBarLayer implements Layer {
       BAR_LINE_BASE + Math.max(0, lines.length - 1) * BAR_LINE_STEP + (hintShown ? HINT_BLOCK : 0);
     // With no interface raised there is no band to anchor to: the bar sits
     // on the screen's own bottom edge.
-    const y = (this.standalone ? screenHeight() : this.interfaceBottom()) - height;
+    const rest = (this.standalone ? screenHeight() : this.interfaceBottom()) - height;
+    // Unlocked: the bar rises from the screen's bottom edge to its rest
+    // place (device issue 3); standalone, it simply appears.
+    const y = this.standalone ? rest : Math.round(rest + (1 - this.slide) * (screenHeight() - height - rest));
     // Opaque: the bar is the interface's lowest element and covers what is
     // under it (the switcher row must not peek out from below it).
     image.fillRect(x, y, width, height, SHELL_OPAQUE_BLACK);
@@ -210,6 +225,9 @@ export class DictationBarLayer implements Layer {
   }
 
   onRemoved(): void {
+    // Left mid-slide: stop the timer before it paints a popped layer.
+    this.cancelSlide?.();
+    this.cancelSlide = null;
     // Left the stack by any path (screen timeout, clear-to-base): stop the
     // mic and report a close — never a send.
     this.finishClose();
