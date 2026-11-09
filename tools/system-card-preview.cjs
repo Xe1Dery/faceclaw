@@ -14,10 +14,11 @@
  *   to mirror exactly for the 24h format this preview assumes.
  *
  * Caveats to read before trusting a preview as gospel:
- * - The big clock uses Metanart_Big (tools/assets/metanart-big.ttf) as a 1bpp
- *   matrix font: tools/assets/extract-metanart-font.py rasterizes it once at
- *   64px, where the face snaps to a 48x48-per-digit grid, and every source
- *   pixel is then drawn as a 2x2 block — the stock-G2 chunky-digit look.
+ * - The big clock uses DisplayOTF (tools/assets/DisplayOTF.otf) directly: the
+ *   face itself is a dot matrix (square dots with visible gaps), so
+ *   tools/assets/extract-metanart-font.py rasterizes it once at 240px to a
+ *   1bpp cell and the preview draws that cell 1:1 — exactly what the font
+ *   ships, no invented grid.
  *   Small text (date, status, counter) still renders with the REAL Terminus
  *   .bdf files the app bundles, via the one @nativescript/core shim below.
  * - Everything outside the battery block is a PROTOTYPE layout, not the
@@ -172,28 +173,31 @@ function drawTopRow(image, now) {
   drawBatteryBlock(image, W - PAD, PAD + 7);
 }
 
-// --- the clock: stock-style big matrix digits, hours stacked over minutes ----
+// --- the clock: big dot-matrix digits, hours stacked over minutes ------------
 
-const DIGIT_BLOCK = 2; // each matrix-font pixel becomes a 2x2 block (4 pixels)
+// The extracted cell is the font rasterized 1:1 (dots and gaps are the font's
+// own), so drawing is a plain 1:1 blit. PITCH/DOT stay as knobs in case a
+// coarser grid than the font's own is ever wanted.
+const MATRIX_PITCH = 1;
+const MATRIX_DOT = 1;
 
 /**
- * Draw `text` with the Metanart matrix font, each source pixel a
- * DIGIT_BLOCK x DIGIT_BLOCK square, centered horizontally at `centerY`.
+ * Draw `text` with the dot-matrix font, centered horizontally at `centerY`.
  */
 function drawMatrixDigits(image, text, centerY, value) {
   const cellW = MATRIX_FONT.cellW;
   const cellH = MATRIX_FONT.cellH;
-  const x0 = Math.round((W - text.length * cellW * DIGIT_BLOCK) / 2);
-  const y0 = Math.round(centerY - (cellH * DIGIT_BLOCK) / 2);
+  const x0 = Math.round((W - text.length * cellW * MATRIX_PITCH) / 2);
+  const y0 = Math.round(centerY - (cellH * MATRIX_PITCH) / 2);
   for (let i = 0; i < text.length; i++) {
     const rows = MATRIX_FONT.glyphs[text[i]];
     if (!rows) continue;
-    const gx = x0 + i * cellW * DIGIT_BLOCK;
+    const gx = x0 + i * cellW * MATRIX_PITCH;
     for (let y = 0; y < cellH; y++) {
       const row = rows[y];
       for (let x = 0; x < cellW; x++) {
         if (row[x] === "#")
-          image.fillRect(gx + x * DIGIT_BLOCK, y0 + y * DIGIT_BLOCK, DIGIT_BLOCK, DIGIT_BLOCK, value);
+          image.fillRect(gx + x * MATRIX_PITCH, y0 + y * MATRIX_PITCH, MATRIX_DOT, MATRIX_DOT, value);
       }
     }
   }
@@ -210,7 +214,7 @@ function drawCard(now, opts) {
   drawTopRow(image, now);
   const time = formatClockTime(now);
   const [hh, mm] = time.split(":");
-  const digitH = MATRIX_FONT.cellH * DIGIT_BLOCK;
+  const digitH = MATRIX_FONT.cellH * MATRIX_PITCH;
   const lineGap = Math.round(digitH * 0.12);
   const hourCenter = Math.round(H / 2 - digitH / 2 - lineGap / 2);
   const minuteCenter = Math.round(H / 2 + digitH / 2 + lineGap / 2);
@@ -277,7 +281,7 @@ const html = `<!doctype html>
  .lens{width:640px;height:480px;background:#000;border:1px solid #333;margin:10px 0}
 </style>
 <h1>System Card — редизайн (640×480, отрисовано настоящим прикладным кодом)</h1>
-<p class="note">Время — Metanart_Big как матричный шрифт: 48×48 на цифру, каждый пиксель шрифта = блок 2×2 (цифры 96×96), часы над минутами.
+<p class="note">Время — DisplayOTF 1:1 (шрифт сам состоит из квадратов с зазорами), растеризация 240px → 1bpp, часы над минутами.
 Батарея справа сверху — настоящая отрисовка из graphics/battery.ts, без изменений.</p>
 ${written
   .map(

@@ -20,9 +20,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TTF = os.path.join(HERE, "DisplayOTF.otf")
 OUT = os.path.join(HERE, "metanart-font.json")
 
-SIZE = 96  # digit cell ~53x67; the preview's 2x2 block makes digits ~106x134
-DIGITS = "0123456789:"
 
+DIGITS = "0123456789:"
+SIZE = 240  # the face IS a dot matrix at this size: dots rasterize ~10x10
+            # with visible gaps; the preview draws it 1:1 (pitch = dot + 1)
 font = ImageFont.truetype(TTF, SIZE)
 boxes = {ch: font.getbbox(ch) for ch in DIGITS}
 cell_w = max(b[2] - b[0] for b in boxes.values())
