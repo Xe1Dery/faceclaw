@@ -1721,7 +1721,9 @@ class Shell {
     const autoSend = options.autoSend ?? assistantSkipConfirmationSetting.get();
     const layer = new DictationBarLayer({
       actions: this.config.actions,
-      interfaceBottom,
+      // The assistant's own band (its Display mode may differ from the
+      // global one), so the bar rides just under the chat window (issue 1).
+      interfaceBottom: () => interfaceBottom("ai-chat"),
       standalone,
       dismiss: () => {
         this.stack.popIfTop((top) => top === layer);
@@ -2111,7 +2113,7 @@ class Shell {
     if (standalone) this.wakeForStandalone();
     const refusal = new DictationRefusalLayer(
       this.config.actions,
-      interfaceBottom,
+      () => interfaceBottom("ai-chat"),
       () => {
         this.stack.popIfTop((top) => top === refusal);
         this.config.requestShellRender();

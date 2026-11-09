@@ -31,11 +31,13 @@ import { type Layer, type LayerActions, type LayerContext } from "../layers";
  * starts the next session clean).
  *
  * Layout: header "OpenClaw" left, the link square right (the same drawing
- * the system card uses). User lines carry a "> " prefix and sit dimmer;
- * the agent answer is bright. While a turn runs and no answer text has
- * started, the current action (Thinking, Exec...) holds the answer's place
- * in dark small text; the first answer token replaces it in that same spot.
- * Scroll works during generation; an arrow marks more content below.
+ * the system card uses. The panel is monochrome, so the thread's hierarchy
+ * is size and weight, not brightness (device issue 4: dimmed text on this
+ * panel is a dither pattern, which reads as noise): user lines carry a "> "
+ * prefix, and both roles print solid. Only the transient text is dim — the
+ * action trail small and dark while a turn runs, the hint row and the
+ * scroll arrow mid-dim. Scroll works during generation; an arrow marks
+ * more content below.
  */
 
 export type ChatMessage = { role: "user" | "agent"; text: string };
@@ -159,7 +161,7 @@ export class ChatSessionLayer implements Layer {
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
     // header, inside the viewport (the status bar's rows sit above it)
-    image.drawText(small, view.x + MARGIN, view.y + 8, "OpenClaw", 200);
+    image.drawText(small, view.x + MARGIN, view.y + 8, "OpenClaw", 170);
     paintLinkSquare(image, view.x + view.width - MARGIN - LINK_SQUARE, view.y + 10);
     // body
     const headerHeight = Math.min(HEADER_HEIGHT, view.height);
@@ -180,11 +182,11 @@ export class ChatSessionLayer implements Layer {
     }
     // more content below
     if (this.scrollOffset < maxOffset) {
-      image.drawText(small, view.x + view.width - MARGIN - small.measureText("▼"), contentBottom - small.lineHeight, "▼", 150);
+      image.drawText(small, view.x + view.width - MARGIN - small.measureText("▼"), contentBottom - small.lineHeight, "▼", 170);
     }
     // footer hint
     const hint = this.hintText(small);
-    if (hint) image.drawText(small, view.x + MARGIN, view.y + view.height - HINT_HEIGHT, hint, 150);
+    if (hint) image.drawText(small, view.x + MARGIN, view.y + view.height - HINT_HEIGHT, hint, 170);
     return image;
   }
 
@@ -236,17 +238,17 @@ export class ChatSessionLayer implements Layer {
     for (const message of this.history) {
       if (message.role === "user") {
         for (const line of wrapText(medium, `> ${message.text}`, width, { breakLongWords: true })) {
-          out.push({ text: line, value: 170, height: medium.lineHeight, font: "medium" });
+          out.push({ text: line, value: 255, height: medium.lineHeight, font: "medium" });
         }
         continue;
       }
       for (const line of wrapText(medium, message.text, width, { breakLongWords: true })) {
-        out.push({ text: line, value: 235, height: medium.lineHeight, font: "medium" });
+        out.push({ text: line, value: 255, height: medium.lineHeight, font: "medium" });
       }
     }
     if (this.streamingText) {
       for (const line of wrapText(medium, this.streamingText, width, { breakLongWords: true })) {
-        out.push({ text: line, value: 235, height: medium.lineHeight, font: "medium" });
+        out.push({ text: line, value: 255, height: medium.lineHeight, font: "medium" });
       }
     } else if (this.actionTrail) {
       // The trail sits exactly where the answer will print.

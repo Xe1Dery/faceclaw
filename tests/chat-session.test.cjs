@@ -76,9 +76,10 @@ test('a working turn shows the trail where the answer will print', () => {
   const trail = ops.find((o) => o.op === 'text' && /Exec: ticktick/.test(o.text ?? ''));
   assert.ok(trail, 'the action trail is drawn');
   assert.equal(trail.value, 130);
-  // The user line is dim and prefixed.
+  // The user line is prefixed and solid: the panel is monochrome, so the
+  // thread's hierarchy is size and weight, not brightness (device issue 4).
   const user = ops.find((o) => o.text === '> напомни маме');
-  assert.equal(user.value, 170);
+  assert.equal(user.value, 255);
 });
 
 test('the first answer token replaces the trail in its place', () => {
@@ -91,7 +92,7 @@ test('the first answer token replaces the trail in its place', () => {
   const ops = e.paint(layer);
   assert.ok(!ops.some((o) => /Exec:/.test(o.text ?? '')), 'the trail is gone');
   const answer = ops.find((o) => o.text === 'Готово');
-  assert.equal(answer.value, 235);
+  assert.equal(answer.value, 255);
 });
 
 test('a finished turn lands in the thread and offers the follow-up hint', () => {
