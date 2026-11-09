@@ -420,20 +420,24 @@ wearer, dialog_open's mic must not be hot on open — the line now shows with
 mic shows a hint and keeps the line), the ttl times the waiting phase only,
 and a tapped capture into silence settles on the 30s hard cap.
 
-Known issue (open, 2026-11-09): after ~30-40s screen-off the FIRST wake's
-brightness fade is ragged; every immediate re-wake is smooth. The timing
-matches the EvenHub screen-off SUSPEND path exactly (30s screen timeout +
-5s suspend delay): wake after suspend is a full resume (prelude -> CREATE
--> frame -> READY, wake-lease CLAIM wait, resource-cache reset), so the
-280ms firmware fade plays while resume traffic is still streaming. The
-fade itself is one CFW msg-30 command interpolated by the firmware (no
-BLE stepping), so the suspect is contention/late present, not the ramp.
-Suspected fork aggravator: the stock-G2 grid clock redraws its whole slot
-every minute (hundreds of fillRects at pitch 6), so a minute flip can land
-inside the fade window. Not yet tried: skip the system-card redraw when the
-minute text is unchanged; toggling "Suspend EvenHub when screen off" off
-(Settings, developer group) would confirm the suspend-resume path as the
-source.
+Closed issue (2026-11-09): after ~30-40s screen-off the FIRST wake's
+brightness fade was ragged; every immediate re-wake was smooth. Diagnosis
+confirmed by the wearer: turning "Suspend EvenHub when screen off" off
+(Settings, developer group) makes every wake smooth, and a ROLLED-BACK
+build shows the same raggedness — so it is not a fork regression at all.
+The wake after suspend is a full EvenHub resume (prelude -> CREATE ->
+frame -> READY, wake-lease CLAIM wait, resource-cache reset), and the
+280ms firmware fade (one CFW msg-30 command, interpolated on-glasses)
+plays while that resume traffic streams. Accepted as-is: the wearer keeps
+the suspend setting as they prefer it. No code change made; if it ever
+needs softening, the first lever is skipping the system-card redraw when
+the minute text is unchanged.
+
+Related, same day: "long-press no longer shows the Glanceboard" was NOT a
+regression either — glanceboard.enabled had been off (upstream default is
+false; our fork never touched it). Enabling it restored hold-to-show. If
+fresh installs should show the board out of the box, flip the default in
+app/apps/glanceboard/glanceboard-settings.ts (user approval required).
 
 ## Unfinished work — do this next
 
