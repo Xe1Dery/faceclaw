@@ -32,32 +32,40 @@ export function singlePlane(image: GrayImage): Plane[] {
 /**
  * The shell scene's per-plane budget (see graphics/shell-scene.ts): a plane
  * encodes to at most 64 KiB, 2 bytes per pixel pair plus a 5-byte header.
- * A takeover layer's opaque canvas is split into rows of this height so no
- * strip exceeds it (640 wide: 5 + 320×160 = 51,205).
+ * A takeover layer's opaque canvas is split into strips of at most this many
+ * rows so no strip exceeds it (640 wide: 5 + 320×160 = 51,205).
  */
 export const SHELL_PLANE_MAX_ROWS = 160;
 
 /**
- * Split a plane taller than SHELL_PLANE_MAX_ROWS into horizontal strips.
- * The shell scene caps one plane at 64 KiB (graphics/shell-scene.ts), and a
- * full-screen opaque canvas — a takeover layer's backdrop — exceeds that at
- * any strip height the scene still allows full-width content in, so such a
- * canvas must go up as a stack of strips. A canvas of at most this height
- * always encodes (640 wide: 5 + 320×160 = 51,205) and stays one plane, so
- * sparse overlays and window stacks never churn their resource keys. The
- * strips keep the plane's position and depth; keys are the caller's to
- * assign (the scene requires one per strip) and the dim belongs on the first
- * strip alone (see LayerStack.paintLayer).
+ * Split a plane whose rows would exceed the shell scene's 64 KiB per-plane
+ * budget (graphics/shell-scene.ts) into horizontal strips: a full-screen
+ * opaque canvas — a takeover layer's backdrop — exceeds it, and goes up as a
+ * stack of strips. The strip height follows the plane's own width, since the
+ * budget is an area, not a row count: a narrower canvas (a band-mode
+ * takeover, 576 wide with the switcher beside it) takes taller strips and
+ * goes up as fewer planes. `rows` caps the strip height anyway (default: the
+ * 160 rows a 640-wide strip fits within the budget in), so a plane that fits
+ * one such strip stays whole and sparse overlays never churn their resource
+ * keys. The strips keep the plane's position and depth; keys are the caller's
+ * to assign (the scene requires one per strip) and the dim belongs on the
+ * first strip alone (see LayerStack.paintLayer).
  */
 export function splitPlaneRows(plane: Plane, rows = SHELL_PLANE_MAX_ROWS): Plane[] {
   const baked = plane.image.withDrawsBaked(false);
-  if (!(baked.pixels instanceof Uint8Array) || baked.height <= rows) return [plane];
+  if (!(baked.pixels instanceof Uint8Array)) return [plane];
+  // Rows that keep a strip of this plane's width within the budget, capped
+  // by `rows`; a plane that fits in one such strip stays whole.
+  const width = baked.width;
+  const rowBytes = Math.ceil(width / 2);
+  if (5 + rowBytes * baked.height <= 65536) return [plane];
+  const height = Math.min(rows, Math.max(1, Math.floor((65536 - 5) / rowBytes)));
   const parts: Plane[] = [];
-  for (let top = 0; top < baked.height; top += rows) {
-    const height = Math.min(rows, baked.height - top);
-    const strip = new GrayImage(baked.width, height, 0);
-    for (let row = 0; row < height; row++) {
-      strip.pixels.set(baked.pixels.subarray((top + row) * baked.width, (top + row) * baked.width + baked.width), row * baked.width);
+  for (let top = 0; top < baked.height; top += height) {
+    const stripHeight = Math.min(height, baked.height - top);
+    const strip = new GrayImage(width, stripHeight, 0);
+    for (let row = 0; row < stripHeight; row++) {
+      strip.pixels.set(baked.pixels.subarray((top + row) * width, (top + row) * width + width), row * width);
     }
     plane.image.copyPresentationsInto(strip, 0, -top);
     parts.push({ ...plane, image: strip, y: plane.y + top });

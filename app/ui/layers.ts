@@ -347,37 +347,42 @@ export class LayerStack {
       }),
     );
     const ownPlane: Plane = { image, x: 0, y: 0, shellKey: key, depth: layer.depth, dimUnderneath: layer.dimUnderneath === false ? 1 : layer.dimUnderneath };
+    // The shell scene caps one plane at 64 KiB and wants a unique key per
+    // plane, so a layer's full-size canvas — a takeover's opaque backdrop,
+    // or an overlay that painted most of the screen (the chat window's band
+    // over the painted interface) — goes up as horizontal strips, each with
+    // its own stable key. The layer's dim rides on the first strip alone:
+    // the firmware applies one brightness LUT per plane, and strips of one
+    // canvas must dim what is below them once, not per strip. Only the
+    // shell's own stack (no fixed base size) encodes through the shell
+    // scene; an app window's stack submits its plane as a window surface
+    // frame, which has no such budget. A canvas that fits one strip stays
+    // one plane, so sparse overlays never churn their resource keys.
+    let parts: Plane[] = [ownPlane];
+    if (this.baseSize === null && index > 0) {
+      const strips = splitPlaneRows(ownPlane);
+      if (strips.length > 1) {
+        let keys = this.takeoverKeys.get(layer);
+        if (!keys || keys.length !== strips.length) {
+          keys = strips.map(() => LayerStack.allocateShellKey());
+          this.takeoverKeys.set(layer, keys);
+        }
+        parts = strips.map((strip, part) => ({
+          ...strip,
+          shellKey: keys![part],
+          dimUnderneath: part === 0 ? ownPlane.dimUnderneath : 1,
+        }));
+      }
+    }
     if (index <= 0) {
       this.lastBaseDim = dimSoFar;
-      return [ownPlane];
+      return parts;
     }
-    if (!belowRequested) {
-      // A takeover layer (no paintBelow) owns the whole screen and paints an
-      // opaque canvas; the shell scene caps one plane at 64 KiB and wants a
-      // unique key per plane, so the canvas goes up as horizontal strips,
-      // each with its own stable key. The layer's dim rides on the first
-      // strip alone: the firmware applies one brightness LUT per plane, and
-      // strips of one canvas must dim what is below them once, not per strip.
-      // Only the shell's own stack (no fixed base size) encodes through the
-      // shell scene; an app window's stack submits its plane as a window
-      // surface frame, which has no such budget.
-      const strips = this.baseSize === null ? splitPlaneRows(ownPlane) : [ownPlane];
-      if (strips.length === 1) return strips;
-      let keys = this.takeoverKeys.get(layer);
-      if (!keys || keys.length !== strips.length) {
-        keys = strips.map(() => LayerStack.allocateShellKey());
-        this.takeoverKeys.set(layer, keys);
-      }
-      return strips.map((strip, part) => ({
-        ...strip,
-        shellKey: keys![part],
-        dimUnderneath: part === 0 ? ownPlane.dimUnderneath : 1,
-      }));
-    }
+    if (!belowRequested) return parts;
     const dim = layer.dimUnderneath || 1;
     let belowIndex = layer.paintOverBase ? 0 : index - 1;
     while (belowIndex > 0 && layer.replacesLayerBelow?.(this.layers[belowIndex]!)) belowIndex--;
     const below = this.paintLayer(belowIndex, dimSoFar * dim, raw);
-    return [...(!raw && dim < 1 ? dimPlanes(below, dim) : below), ownPlane];
+    return [...(!raw && dim < 1 ? dimPlanes(below, dim) : below), ...parts];
   }
 }

@@ -157,7 +157,9 @@ test('a stack without its own size follows the screen when the glasses type chan
   assert.deepEqual(sizes(),[[540,220],[540,220]]);
   screen.width=640;screen.height=480;
   assert.deepEqual({...stack.getBaseSize()},{width:640,height:480});
-  assert.deepEqual(sizes(),[[640,480],[640,480]]);
+  // The base keeps its one plane; the stacked layer's full-size canvas goes
+  // up as shell-scene strips (one plane may not pass the 64 KiB budget).
+  assert.deepEqual(sizes(),[[640,480],[640,160],[640,160],[640,160]]);
   // An explicit size (a window's viewport, the modal's interior) stays put.
   const sized=new LayerStack({paint:()=>new graphics.GrayImage(100,90,0)},noopLayerActions,{width:100,height:90});
   screen.width=540;screen.height=220;
