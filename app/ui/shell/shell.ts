@@ -84,6 +84,7 @@ import {
   switcherRowHeight,
   uiDepth,
   interfaceBottom,
+  SHELL_OPAQUE_BLACK,
   windowBandHeight,
   windowFramed,
   windowTop,
@@ -383,7 +384,12 @@ const ALERT_H = 96;
 class ShellAlertLayer implements Layer {
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly text: string, private readonly onDismiss: () => void) {
+  constructor(
+    private readonly text: string,
+    private readonly onDismiss: () => void,
+    /** Locked glasses: the alert arrives alone over a dark screen (spec 4). */
+    private readonly standalone = false,
+  ) {
     this.timer = setTimeout(() => {
       this.timer = null;
       this.onDismiss();
@@ -391,13 +397,16 @@ class ShellAlertLayer implements Layer {
   }
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
-    const image = paintBelow();
+    const image = this.standalone
+      ? new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK)
+      : paintBelow();
     const font = getDefaultSmallFont();
     // Positioned within the min-height window band, like the other shell overlays.
-    const alertY = minWindowTop() + ALERT_Y;
+    // Standalone: centered on the screen instead, there is no band to ride.
+    const alertY = this.standalone ? Math.round((screenHeight() - ALERT_H) / 2) : minWindowTop() + ALERT_Y;
     image.fillRect(ALERT_X, alertY, alertW(), ALERT_H, 1);
     image.drawRect(ALERT_X, alertY, alertW(), ALERT_H, 90);
-    image.drawText(font, ALERT_X + 16, alertY + 12, "Assistant", 200);
+    image.drawText(font, ALERT_X + 16, alertY + 12, "OpenClaw", 200);
     image.drawTextWrapped({
       font,
       x: ALERT_X + 16,
@@ -523,6 +532,9 @@ class Shell {
   /** The session's thread, kept while the window is minimized by sleep so a
    * wake restores it; cleared on explicit close (spec 3). */
   private chatHistory: ChatMessage[] = [];
+  /** A dialog_open answer waiting to reach the agent as a normal utterance
+   * once the tool-calling turn settles (spec 5). */
+  private pendingDialogAnswer: string | null = null;
   private readonly assistantActivityListeners = new Set<(event: AssistantActivityEvent) => void>();
   private readonly alertListeners = new Set<(text: string) => void>();
   // Interactive reminders by id, while their popup is open and awaiting an
@@ -1902,7 +1914,13 @@ class Shell {
 
   private runAssistantTurn(session: AssistantSession, layer: ChatSessionLayer | null, text: string): void {
     if (session.isTurnActive()) return;
-    layer?.appendUser(text);
+    // A dialog_open answer is already in the window's thread (spec 5); it
+    // rides along as this turn's utterance without being appended twice.
+    if (this.pendingDialogAnswer !== null && text === this.pendingDialogAnswer) {
+      this.pendingDialogAnswer = null; // consumed by this turn
+    } else {
+      layer?.appendUser(text);
+    }
     layer?.startTurn();
     let replySoFar = "";
     this.emitAssistantActivity({ phase: "thinking", text: "" });
@@ -1916,9 +1934,13 @@ class Shell {
       onTurnDone: () => {
         layer?.onTurnDone();
         this.emitAssistantActivity({ phase: "done", text: replySoFar });
+        // The tool-calling turn ended; a dialog_open answer waiting behind it
+        // now goes to the agent as the next utterance (spec 5).
+        this.flushPendingDialogAnswer();
       },
       onError: (message) => {
         layer?.onError(message);
+        this.pendingDialogAnswer = null;
         this.emitAssistantActivity({ phase: "error", text: message });
       },
     });
@@ -1934,7 +1956,6 @@ class Shell {
     const session = this.assistantSession;
     if (!layer || !session) return;
     this.openAssistantDictation({
-      autoSend: false,
       onSent: (text) => this.runAssistantTurn(session, layer, text),
     });
   }
@@ -1957,6 +1978,39 @@ class Shell {
   /** Re-open the minimized chat window with its thread (spec 3). */
   private restoreChatWindow(): void {
     if (this.assistantLayer || this.chatHistory.length === 0) return;
+    this.pushChatWindow();
+  }
+
+  /** A dialog_open answer opens the full session window over the exchange
+   * (spec 5): the agent's question and the wearer's answer are its first
+   * two lines; the bar continues the thread from there. */
+  private openChatFromDialog(question: string, answer: string): void {
+    if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) return;
+    this.chatHistory.push({ role: "agent", text: question }, { role: "user", text: answer });
+    // The answer reaches the agent as a normal utterance, not as the tool's
+    // payload (spec 5): sent now if no shell turn is in flight, else once
+    // the turn that raised the question settles.
+    this.pendingDialogAnswer = answer;
+    this.flushPendingDialogAnswer();
+    if (this.assistantLayer) {
+      this.config.requestShellRender();
+      return;
+    }
+    this.pushChatWindow();
+  }
+
+  /** Deliver a dialog_open answer to the agent as the next utterance, once
+   * no shell turn is in flight (the turn that raised the question may still
+   * be running). */
+  private flushPendingDialogAnswer(): void {
+    if (this.pendingDialogAnswer === null) return;
+    if (this.assistantSession?.isTurnActive()) return;
+    // runAssistantTurn consumes the pending marker: the answer is already
+    // displayed in the window, so it is not appended a second time.
+    this.sendToAssistant(this.pendingDialogAnswer);
+  }
+
+  private pushChatWindow(): void {
     const created = new ChatSessionLayer(this.config.actions, {
       onFollowUp: () => this.startAssistantFollowUp(),
       onCancel: () => this.assistantSession?.cancel(),
@@ -1996,7 +2050,10 @@ class Shell {
 
   /** Show a brief text popup on the lenses (assistant show_alert / notices). */
   showAlert(text: string): void {
-    if (!this.screenOn) this.wake("sidebar");
+    // Locked glasses: the alert arrives alone, without raising the interface
+    // behind it (spec 4). Decided before the wake.
+    const standalone = !this.screenOn;
+    if (standalone) this.wake("sidebar");
     for (const listener of Array.from(this.alertListeners)) {
       try {
         listener(text);
@@ -2004,10 +2061,14 @@ class Shell {
         console.warn("alert listener failed", error);
       }
     }
-    const layer = new ShellAlertLayer(text, () => {
-      this.stack.popIfTop((top) => top === layer);
-      this.config.requestShellRender();
-    });
+    const layer = new ShellAlertLayer(
+      text,
+      () => {
+        this.stack.popIfTop((top) => top === layer);
+        this.config.requestShellRender();
+      },
+      standalone,
+    );
     this.stack.push(layer);
     this.config.requestShellRender();
   }
@@ -2112,7 +2173,12 @@ class Shell {
       },
       (onDone) => this.openAssistantDictation({
         autoSend: false,
-        onSent: (text) => onDone(text),
+        onSent: (text) => {
+          // The answer continues the exchange in the chat window (spec 5),
+          // not as this tool's payload.
+          this.openChatFromDialog(request.text, text);
+          onDone(text);
+        },
         onClosed: () => onDone(null),
       }),
       { standalone },

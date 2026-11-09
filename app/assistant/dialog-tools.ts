@@ -3,13 +3,13 @@
  *
  * The reminder popup (glasses.reminder_show) is the delivery primitive:
  * structured answer, retry ledger, no conversation. This tool is the
- * discussion primitive: the agent shows one line, the wearer answers by
- * voice (hands-free, one utterance), and the transcript comes back as the
- * tool result in the same agent turn — so the agent, not the phone, owns
- * the conversation flow and can chain another dialog_open or a show_alert
- * acknowledgment. The agent IS the assistant backend over the bridge, so
- * the assistant overlay is deliberately not opened: a second concurrent
- * turn in the same session would only collide with the caller.
+ * discussion primitive, and since the redesign it is a SESSION (spec 5):
+ * the agent shows one line, the wearer answers by voice through the shared
+ * dictation bar, and the tool only reports {action, session: true} — the
+ * transcript does NOT ride back in the tool result. The answer opens the
+ * full chat session window on the glasses and reaches the agent as the
+ * next normal utterance of the conversation, so the wearer can keep
+ * talking in the window instead of getting one exchange.
  *
  * Refusals (voice input off, mic held by another dialog, a turn already
  * open) return an error naming the fallback: the agent should degrade to
@@ -36,10 +36,12 @@ export function registerDialogTools(registry: ToolRegistry = toolRegistry): void
       name: "glasses.dialog_open",
       description:
         "Open one proactive voice-dialog turn on the glasses: display the given line and wait for the wearer " +
-        "to tap (the microphone opens on the tap, never before), then take ONE spoken answer. Blocks until " +
+        "to tap (the dictation bar opens on the tap, never before), then take ONE spoken answer. Blocks until " +
         "the wearer answers, double-taps away, or the timeout passes unanswered. Returns a JSON object " +
-        "{action, text?, respondedAtMs} where action is answered (text carries the verbatim transcript), " +
-        "dismissed (double-tap), or no-answer (timeout). " +
+        "{action, session, respondedAtMs} where action is answered, dismissed (double-tap), or no-answer " +
+        "(timeout). When answered, session is true: the transcript is NOT in this result — the answer opened " +
+        "the chat session window on the glasses and arrives as the wearer's next utterance in this " +
+        "conversation; continue the discussion there. " +
         "Use for questions whose answer is a sentence (e.g. what to do with undated tasks), not for task " +
         "delivery — that is glasses.reminder_show's job. Fails while voice input is off or the microphone " +
         "is held by another dialog; on failure, fall back to glasses.show_alert rather than retrying.",
@@ -70,7 +72,10 @@ export function registerDialogTools(registry: ToolRegistry = toolRegistry): void
         action: outcome.action,
         respondedAtMs: Date.now(),
       };
-      if (outcome.text) result.text = outcome.text;
+      if (outcome.action === "answered") {
+        // The answer lives in the chat session now (spec 5), not here.
+        result.session = true;
+      }
       return ok(JSON.stringify(result));
     },
   );

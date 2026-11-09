@@ -32,14 +32,15 @@ test('dialog_open requires non-empty text', async () => {
   assert.equal(calls.length, 0);
 });
 
-test('dialog_open returns the outcome as JSON and clamps ttl', async () => {
+test('an answered dialog returns session:true, never the transcript, and clamps ttl', async () => {
   const { registry, calls, setOutcome } = toolsEnv();
   setOutcome({ action: 'answered', text: 'обе на вечер' });
   const result = await registry.callTool('glasses.dialog_open', { text: 'Что сделать с задачами?', ttl_ms: 999_999 });
   assert.equal(result.ok, true);
   const payload = JSON.parse(result.content);
   assert.equal(payload.action, 'answered');
-  assert.equal(payload.text, 'обе на вечер');
+  assert.equal(payload.session, true); // the exchange became a chat session (spec 5)
+  assert.equal('text' in payload, false, 'the transcript reaches the agent as the next utterance, not here');
   assert.equal(typeof payload.respondedAtMs, 'number');
   assert.equal(calls[0].ttlMs, 180_000); // clamped to the tool maximum
 });
