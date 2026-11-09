@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Rasterize tools/assets/metanart-big.ttf into a 1bpp matrix font (JSON).
+"""Rasterize the display TTF into a 1bpp matrix font (JSON).
 
 The stock G2 clock look we want is: a chunky digital face rasterized so each
-source pixel is a square block on the lens. This script renders Metanart_Big
-at a size where each digit fills a 48x48 cell (verified: the face snaps to
-that grid at 64px), thresholds to 1bpp, and writes every digit + ':' as
-'#'/'.' rows. tools/system-card-preview.cjs then draws each source pixel as a
-2x2 block (=> 96px digits), hours stacked over minutes.
+source pixel is a square block on the lens. This script renders the display
+face (DisplayOTF.otf) at a size where a digit fills a ~53x67 cell, thresholds
+to 1bpp (the face is anti-aliased, so a hard cut at 127 is used), centers
+every glyph in a common cell, and writes digits + ':' as '#'/'.' rows.
+tools/system-card-preview.cjs then draws each source pixel as a 2x2 block —
+the stock-G2 chunky-digit look, hours stacked over minutes.
 
-Regenerate after editing the TTF:  python3 tools/assets/extract-metanart-font.py
+Regenerate after swapping the TTF:  python3 tools/assets/extract-metanart-font.py
 """
 import json
 import os
@@ -16,10 +17,10 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TTF = os.path.join(HERE, "metanart-big.ttf")
+TTF = os.path.join(HERE, "DisplayOTF.otf")
 OUT = os.path.join(HERE, "metanart-font.json")
 
-SIZE = 64  # the size at which the face rasterizes to the 48px cell grid
+SIZE = 96  # digit cell ~53x67; the preview's 2x2 block makes digits ~106x134
 DIGITS = "0123456789:"
 
 font = ImageFont.truetype(TTF, SIZE)
@@ -31,7 +32,9 @@ glyphs = {}
 for ch in DIGITS:
     b = boxes[ch]
     img = Image.new("L", (cell_w + 8, cell_h + 8), 0)
-    ImageDraw.Draw(img).text((4 - b[0], 4 - b[1]), ch, font=font, fill=255)
+    # center each glyph horizontally in the common cell so digits align
+    dx = (cell_w - (b[2] - b[0])) // 2
+    ImageDraw.Draw(img).text((4 + dx - b[0], 4 - b[1]), ch, font=font, fill=255)
     px = img.load()
     glyphs[ch] = [
         "".join("#" if px[x, y] > 127 else "." for x in range(4, 4 + cell_w))
