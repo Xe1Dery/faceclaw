@@ -24,7 +24,21 @@ function env() {
     '../../graphics/image': { GrayImage },
     '../../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => font(12), getDefaultMediumFont: () => font(16) },
-    './geometry': { SHELL_OPAQUE_BLACK: 1 },
+    './geometry': {
+      SHELL_OPAQUE_BLACK: 1,
+      // The G2 with the switcher at the bottom and the global band-middle
+      // display mode: a 576x288 band centred, framed, at y=96.
+      appViewportRect: () => ({ x: 32, y: 96, width: 576, height: 260 }),
+      interfaceBottom: () => 480,
+      switcherRect: () => ({ x: 32, y: 384, width: 576, height: 36 }),
+      switcherRowHeight: () => 36,
+      statusBarOverlays: () => false,
+      statusBarEdge: () => 'top',
+      switcherPosition: () => 'bottom',
+      TOP_BAR_HEIGHT: 28,
+      windowFramed: () => true,
+      windowTop: () => 96,
+    },
     '../../assistant/bridge-client': { assistantBridge: { state: () => ({ phase: 'connected', status: '' }) } },
   });
   const mod = load('app/ui/shell/chat-session.ts');
@@ -44,7 +58,7 @@ function env() {
     const image = layer.paint({ stack: {} }, () => new GrayImage(640, 480, 0));
     return image.ops;
   }
-  return { mod, actions, open, paint, renders };
+  return { mod, actions, open, paint, renders, GrayImage };
 }
 
 const click = { type: 'click', timestampMs: 0 };
@@ -130,16 +144,21 @@ test('restoreIdle keeps the thread and follows whether a turn is live', () => {
   assert.ok(!e.paint(layer).some((o) => /выйти/.test(o.text ?? '')));
 });
 
-test('the window paints its own opaque canvas and hides the interface', () => {
+test('the window paints an opaque panel over its band and keeps the interface', () => {
   const e = env();
   const { layer } = e.open();
   let belowCalled = false;
-  const image = layer.paint({ stack: {} }, () => { belowCalled = true; return null; });
-  assert.equal(belowCalled, false, 'paintBelow is never asked: the interface stays hidden');
-  assert.equal(image.width, 640);
-  assert.equal(image.height, 480);
-  assert.equal(image.value, 1, 'the canvas starts opaque black: the interface is replaced');
+  const image = layer.paint({ stack: {} }, () => { belowCalled = true; return new e.GrayImage(640, 480, 0); });
+  assert.equal(belowCalled, true, 'the chrome below stays painted as its own planes');
+  assert.equal(image.value, 0, 'the canvas starts transparent: the interface shows around the band');
+  const panel = image.ops.find((o) => o.op === 'fillRect');
+  assert.deepEqual(panel.a.slice(0, 4), [32, 96, 576, 260], 'the opaque panel covers exactly the window band');
   assert.ok(image.ops.some((o) => o.text === 'OpenClaw'));
+  // Device issue 1: content stays inside the band, never at the screen edges.
+  for (const o of image.ops.filter((x) => x.op === 'text')) {
+    assert.ok(o.y >= 96 && o.y <= 96 + 260, `text at y=${o.y} stays in the band`);
+    assert.ok(o.x >= 32 && o.x <= 32 + 576, `text at x=${o.x} stays in the band`);
+  }
 });
 
 test('an error keeps the window and offers the close gesture', () => {

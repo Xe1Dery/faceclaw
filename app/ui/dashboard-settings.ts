@@ -799,7 +799,11 @@ function legacyAppDisplayLayout(appId: string, defaultValue: AppDisplayLayout): 
   return mode === "default" || mode === "global" ? mode : defaultValue;
 }
 
-function appDisplayLayoutSetting(appId: string, defaultValue: AppDisplayLayout): ConfigSettingEnum<AppDisplayLayout> {
+function appDisplayLayoutSetting(
+  appId: string,
+  defaultValue: AppDisplayLayout,
+  description: string,
+): ConfigSettingEnum<AppDisplayLayout> {
   return new ConfigSettingEnumWithLegacy<AppDisplayLayout>({
     id: `${appId}-display-mode`,
     label: "Display mode",
@@ -808,14 +812,27 @@ function appDisplayLayoutSetting(appId: string, defaultValue: AppDisplayLayout):
     values: appId === "terminal" ? ["default", "global", ...DISPLAY_LAYOUT_VALUES] : ["global", ...DISPLAY_LAYOUT_VALUES],
     formatValue: (value) => value === "default" ? "Tall sessions (default)" : value === "global" ? "Use global" : displayLayoutLabel(value),
     isDisabled: (value) => value === "fullscreen" && !fullScreenAvailable(),
-    description: appId === "terminal"
-      ? "Display mode for Terminal. The default keeps session windows tall and the terminals list in the global mode. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size."
-      : "Display mode for Navigate. Choose a Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
+    description,
   }, () => legacyAppDisplayLayout(appId, defaultValue));
 }
 
-export const navigateDisplayLayoutSetting = appDisplayLayoutSetting("navigate", "global");
-export const terminalDisplayLayoutSetting = appDisplayLayoutSetting("terminal", "default");
+export const navigateDisplayLayoutSetting = appDisplayLayoutSetting(
+  "navigate",
+  "global",
+  "Display mode for Navigate. Choose a Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
+);
+export const terminalDisplayLayoutSetting = appDisplayLayoutSetting(
+  "terminal",
+  "default",
+  "Display mode for Terminal. The default keeps session windows tall and the terminals list in the global mode. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size.",
+);
+/** The assistant's chat window follows the Display mode too (APK 824): the
+ * band it opens in, or Use global. The dictation bar rides under that band. */
+export const assistantDisplayLayoutSetting = appDisplayLayoutSetting(
+  "ai-chat",
+  "global",
+  "Display mode for the assistant's chat window. Choose a Band to leave more of your field of view clear, or Use global to follow Display settings. The dictation bar sits under the window wherever its band is.",
+);
 
 export type { DataCollectionLevel };
 

@@ -1,5 +1,4 @@
 import { GrayImage } from "../../graphics/image";
-import { screenHeight, screenWidth } from "../../graphics/screen-size";
 import { getDefaultSmallFont, getDefaultMediumFont } from "../../graphics/ui-fonts";
 import { assistantBridge } from "../../assistant/bridge-client";
 import { wrapText } from "../../graphics/textwrap";
@@ -9,14 +8,25 @@ import {
   GESTURE_SCROLL,
   type InputEvent,
 } from "../gestures";
-import { SHELL_OPAQUE_BLACK } from "./geometry";
+import { appViewportRect, SHELL_OPAQUE_BLACK } from "./geometry";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
 
 /**
- * The chat session window (notes/assistant-redesign-spec.md §3): a full
- * screen takeover that replaces the interface while the wearer talks to the
- * agent. It is a session, not a single exchange — follow-ups append to the
- * same thread, and the history survives the screen timing out (the shell
+ * The chat session window (notes/assistant-redesign-spec.md §3): a window
+ * like any other app's while the wearer talks to the agent — it occupies
+ * the Display mode's band, not the whole screen (APK 824, device issue 1).
+ * It paints through `paintBelow` onto a transparent canvas and lays an
+ * opaque panel over the window's viewport, so the status bar, the frame and
+ * the app switcher keep their places around it: the chrome below stays
+ * visible as its own planes wherever this canvas leaves pixels transparent.
+ * The panel is opaque because the band is where the app under it would show
+ * content, and an additive microLED panel cannot cover that with black. The
+ * window never opens standalone: on locked glasses the lock surface would
+ * cover it anyway, so the dictation bar, not the window, is the standalone
+ * face of the assistant (spec 4).
+ *
+ * It is a session, not a single exchange — follow-ups append to the same
+ * thread, and the history survives the screen timing out (the shell
  * minimizes the window and restores it on wake; only an explicit close
  * starts the next session clean).
  *
@@ -52,6 +62,10 @@ const LINK_SQUARE = 12;
 type Phase = "working" | "done" | "error";
 
 export class ChatSessionLayer implements Layer {
+  /** The band this window follows: the Display mode's, per-app overridable
+   * (Settings > Assistant > Chat display mode). */
+  readonly appId = "ai-chat";
+
   private phase: Phase = "working";
   private status = "Thinking...";
   /** The answer being streamed for the current turn ("" before it starts). */
@@ -131,21 +145,27 @@ export class ChatSessionLayer implements Layer {
     this.actions.requestRender();
   }
 
-  paint(_ctx: LayerContext, _paintBelow: () => GrayImage): GrayImage {
-    // No paintBelow: the window replaces the interface entirely (its plane
-    // is submitted alone), which is what "интерфейс скрыт" means here.
-    const width = screenWidth();
-    const height = screenHeight();
-    const image = new GrayImage(width, height, SHELL_OPAQUE_BLACK);
+  paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
+    // The chrome below stays painted as its own planes; this layer's canvas
+    // starts transparent and turns opaque only over the window's viewport,
+    // so the status bar, the frame's sides and the switcher row around the
+    // band show through (device issue 1: the window used to take over the
+    // whole screen). The band is where the app under it would show its
+    // content, and an additive panel cannot cover that with black, so the
+    // panel is painted, not hidden.
+    const view = appViewportRect("min", this.appId);
+    const image = paintBelow();
+    image.fillRect(view.x, view.y, view.width, view.height, SHELL_OPAQUE_BLACK);
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
-    // header
-    image.drawText(small, MARGIN, 8, "OpenClaw", 200);
-    paintLinkSquare(image, width - MARGIN - LINK_SQUARE, 10);
+    // header, inside the viewport (the status bar's rows sit above it)
+    image.drawText(small, view.x + MARGIN, view.y + 8, "OpenClaw", 200);
+    paintLinkSquare(image, view.x + view.width - MARGIN - LINK_SQUARE, view.y + 10);
     // body
-    const contentTop = HEADER_HEIGHT;
-    const contentBottom = height - HINT_HEIGHT - 6;
-    const lines = this.layout(medium, width - MARGIN * 2);
+    const headerHeight = Math.min(HEADER_HEIGHT, view.height);
+    const contentTop = view.y + headerHeight;
+    const contentBottom = view.y + view.height - HINT_HEIGHT - 6;
+    const lines = this.layout(medium, view.width - MARGIN * 2);
     this.contentHeight = lines.reduce((sum, line) => sum + line.height, 0);
     const viewHeight = contentBottom - contentTop;
     const maxOffset = Math.max(0, this.contentHeight - viewHeight);
@@ -154,17 +174,17 @@ export class ChatSessionLayer implements Layer {
     let y = contentTop - this.scrollOffset;
     for (const line of lines) {
       if (y + line.height > contentTop - medium.lineHeight && y < contentBottom) {
-        image.drawText(line.font === "medium" ? medium : small, MARGIN, y, line.text, line.value);
+        image.drawText(line.font === "medium" ? medium : small, view.x + MARGIN, y, line.text, line.value);
       }
       y += line.height;
     }
     // more content below
     if (this.scrollOffset < maxOffset) {
-      image.drawText(small, width - MARGIN - small.measureText("▼"), contentBottom - small.lineHeight, "▼", 150);
+      image.drawText(small, view.x + view.width - MARGIN - small.measureText("▼"), contentBottom - small.lineHeight, "▼", 150);
     }
     // footer hint
     const hint = this.hintText(small);
-    if (hint) image.drawText(small, MARGIN, height - HINT_HEIGHT, hint, 150);
+    if (hint) image.drawText(small, view.x + MARGIN, view.y + view.height - HINT_HEIGHT, hint, 150);
     return image;
   }
 
@@ -197,7 +217,8 @@ export class ChatSessionLayer implements Layer {
     this.scrollOffset += delta;
     this.followBottom = false;
     // Back at the bottom: streaming resumes following.
-    const viewHeight = screenHeight() - HEADER_HEIGHT - HINT_HEIGHT - 6;
+    const view = appViewportRect("min", this.appId);
+    const viewHeight = view.height - Math.min(HEADER_HEIGHT, view.height) - HINT_HEIGHT - 6;
     if (this.scrollOffset >= this.contentHeight - viewHeight - 1) this.followBottom = true;
     this.actions.requestRender();
   }

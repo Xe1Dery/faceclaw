@@ -6,6 +6,7 @@ import {
   type DisplayLayout,
   navigateDisplayLayoutSetting,
   terminalDisplayLayoutSetting,
+  assistantDisplayLayoutSetting,
   statusBarPositionSetting,
   statusBarVisibilitySetting,
   uiDepthSetting,
@@ -72,10 +73,12 @@ function sideStrip(): boolean {
   return position === "left" || position === "right";
 }
 
-/** An app's own Display mode setting (Navigate, Terminal); "default" for the rest. */
+/** An app's own Display mode setting (Navigate, Terminal, the assistant's
+ * chat window); "default" for the rest. */
 function appDisplayLayout(appId?: string) {
   return appId === "navigate" ? navigateDisplayLayoutSetting.get()
-    : appId === "terminal" ? terminalDisplayLayoutSetting.get() : "default";
+    : appId === "terminal" ? terminalDisplayLayoutSetting.get()
+    : appId === "ai-chat" ? assistantDisplayLayoutSetting.get() : "default";
 }
 
 /**

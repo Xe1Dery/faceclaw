@@ -36,6 +36,7 @@ import {
   uiDepthSetting,
   assistantAllowProactiveSetting,
   assistantBackendSetting,
+  assistantDisplayLayoutSetting,
   assistantHermesKeySetting,
   assistantHermesUrlSetting,
   assistantBridgeHostSetting,
@@ -183,6 +184,8 @@ function settingsSections(): SettingsSection[] {
           ] : []),
           global.isIOS ? systemModelMenuItem() : localModelMenuItem(),
           toggleSettingMenuItem(assistantSkipConfirmationSetting),
+          // The chat window's band (APK 824): the Display mode it opens in.
+          enumSettingMenuItem(assistantDisplayLayoutSetting),
           // iOS has no agent bridge yet.
           ...(!global.isIOS ? [
             enumSettingMenuItem(assistantBridgeTransportSetting),
