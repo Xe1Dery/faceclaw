@@ -101,3 +101,20 @@ Preview tool (tools/system-card-preview.cjs):
   tool does NOT reach the widget).
 - The OpenClaw link square must stay sharp-cornered (never rounded): filled
   = connected, hollow+centre dot = redialing, hollow bright = down.
+
+## Style of answers to the user (2026-11)
+
+The user writes in Russian; answer in Russian. Keep answers short and plain:
+
+- No mixing of languages inside a sentence. Use the Russian term or a plain
+  description; keep an English identifier only when it is a literal name in
+  the code or UI (a setting label, a file name, a commit hash), and then keep
+  the surrounding sentence Russian.
+- No transliterated English jargon («ретеншен-кадр», «дергает фейд»,
+  «в апстрима вошёл коммит»). Say what happens in plain words: «кадр,
+  сохранённый очками», «плавность включения», «в исходном репозитории
+  появился ...».
+- Short sentences, one thought each. No chains of dashes and parenthetical
+  asides; expand an abbreviation once, then use it.
+- Explain a mechanism as cause → effect, without internal pipeline names
+  unless the user asked for them.
