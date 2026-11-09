@@ -289,7 +289,12 @@ export class ReminderLayer implements Layer {
     // A final transcript can arrive while the mic is still held (endpointing
     // missed, or the final trailed the tap-stop): never leave it running.
     if (this.capturing()) this.stopMic();
-    if (outcome.action === "dismissed" || outcome.action === "expired" || outcome.action === "cancelled") {
+    // "done" closes right away — the window vanishing is the confirmation.
+    // A held frame after a done answer reads as a second notification for
+    // the same task (wearer confusion, 2026-11-09). Snooze/postpone/other
+    // keep the frame: it carries what the phone understood (which interval,
+    // that free text was accepted).
+    if (outcome.action === "done" || outcome.action === "dismissed" || outcome.action === "expired" || outcome.action === "cancelled") {
       this.dismiss();
     } else {
       this.phase = "answered";

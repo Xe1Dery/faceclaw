@@ -79,8 +79,27 @@ test('a tap starts capture and a final transcript resolves the classified answer
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'done');
   assert.equal(outcomes[0].text, 'сделано');
-  // The confirmation shows briefly, then the layer closes.
-  env.advance(2000);
+  assert.equal(dismisses.count, 1);
+});
+
+test('a done answer closes at once: no held confirmation frame', () => {
+  // A frame held after "done" reads as a second notification for the same
+  // task (2026-11-09 wearer report), so the window vanishing is the confirm.
+  const env = layerEnv();
+  const { layer, dismisses } = openReminder(env);
+  layer.handleInput(click);
+  env.emitTranscript('сделано', true);
+  assert.equal(dismisses.count, 1); // closed on the spot, not after CONFIRM_MS
+});
+
+test('a snooze answer keeps the confirmation frame before closing', () => {
+  const env = layerEnv();
+  const { layer, outcomes, dismisses } = openReminder(env);
+  layer.handleInput(click);
+  env.emitTranscript('через 10 минут', true);
+  assert.equal(outcomes[0].action, 'snooze');
+  assert.equal(dismisses.count, 0); // the frame shows what was understood
+  env.advance(1300); // CONFIRM_MS elapses
   assert.equal(dismisses.count, 1);
 });
 

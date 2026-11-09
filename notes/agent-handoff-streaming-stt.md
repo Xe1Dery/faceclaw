@@ -392,6 +392,14 @@ geometry, DisplayOTF grid facts, webpack copy trap).
 
 No GitHub Release was created and no APK was uploaded anywhere.
 
+`dist/Faceclaw-0.8.7-local-819.apk` (SHA-256
+`8d6be5cc943decf66ddaccc5b5d0bf07b42a45e187df302d1ba5ceaa9e38889b`) closes
+the "two popups in a row" report of 2026-11-09: a `done` answer now closes
+the reminder window at once instead of holding the 1.2s "Marked done"
+confirmation frame, which read as a second notification for the same task.
+Snooze/postpone/other keep the frame (it carries what was understood).
+Reminder-layer suite 17/17, full suite green.
+
 ## Unfinished work — do this next
 
 0. **Interactive reminders (TickTick <-> OpenClaw, added 2026-11-08).** The phone side
