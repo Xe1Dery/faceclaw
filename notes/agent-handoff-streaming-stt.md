@@ -420,6 +420,24 @@ wearer, dialog_open's mic must not be hot on open — the line now shows with
 mic shows a hint and keeps the line), the ttl times the waiting phase only,
 and a tapped capture into silence settles on the 30s hard cap.
 
+`dist/Faceclaw-0.8.7-local-822.apk` (SHA-256
+`1ca6e9b065beaef23654f77bb75cb42d4c4c1527be5ee44c916d6e06f305bf65`): the
+approved assistant redesign (notes/assistant-redesign-spec.md, stages
+1-4 = commits 48c289e, 0d63da4, 5665cf3, 7a772b9, bae8699, a155297).
+Three primitives: the shared dictation bar (full-width, bottom-anchored,
+grows up, tap=send / scroll=re-dictate / double-tap=close, 1.5s auto-send
+line, «Нет связи с OpenClaw» refusal), the chat session window (opaque
+takeover, OpenClaw header + link square, trail replaced by the streaming
+answer, scroll mid-generation, sleep minimizes and wake restores the same
+thread), and isolated notification frames (locked glasses: standalone on
+opaque black, no interface; unlocked: slide-up over the retained
+interface). glasses.dialog_open now answers {action, session: true}
+without the transcript — the answer opens the chat window and reaches the
+agent as the next normal utterance (pendingDialogAnswer flush); the
+courier block was updated to match (nano_assistant 49e40c7).
+AssistantLayer is deleted; VoiceInputLayer remains for Transcribe only.
+Suite 1229/0.
+
 Closed issue (2026-11-09): after ~30-40s screen-off the FIRST wake's
 brightness fade was ragged; every immediate re-wake was smooth. Diagnosis
 confirmed by the wearer: turning "Suspend EvenHub when screen off" off
