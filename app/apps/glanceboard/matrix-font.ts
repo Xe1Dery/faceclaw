@@ -53,9 +53,21 @@ export function loadMatrixGrid(asset = MATRIX_GRID): MatrixGrid | null {
   return cached;
 }
 
-/** Width of `text` in pixels at `pitch` (digits are monospaced cell columns). */
+/**
+ * Clear space added between two neighbouring digits, on top of the dots'
+ * own gap. The face's own grid leaves only one dot gap between a digit's
+ * right column and the next digit's left column, and the wide digits
+ * (0 2 3 4 5 6 8 9) light both, so at a plain cell advance full digits
+ * visually fuse. One empty column's width keeps them clearly apart.
+ */
+export function matrixDigitGap(pitch: number): number {
+  return pitch;
+}
+
+/** Width of `text` in pixels at `pitch`: cell columns plus the digit gaps. */
 export function measureMatrixGrid(grid: MatrixGrid, text: string, pitch: number): number {
-  return text.length * grid.cols * pitch;
+  if (!text.length) return 0;
+  return text.length * grid.cols * pitch + (text.length - 1) * matrixDigitGap(pitch);
 }
 
 /** The gap between the hours and minutes lines for a block of dot `pitch`. */
@@ -74,7 +86,7 @@ export function matrixBlockHeight(grid: MatrixGrid, pitch: number, fraction: num
  */
 export function fitMatrixPitch(grid: MatrixGrid, roomRows: number, roomCols: number, fraction: number): number {
   for (let pitch = Math.floor(roomRows / (grid.rows * 2)); pitch >= 1; pitch--) {
-    if (matrixBlockHeight(grid, pitch, fraction) <= roomRows && grid.cols * pitch * 2 <= roomCols) return pitch;
+    if (matrixBlockHeight(grid, pitch, fraction) <= roomRows && measureMatrixGrid(grid, "00", pitch) <= roomCols) return pitch;
   }
   return 0;
 }
@@ -96,10 +108,11 @@ export function drawMatrixGrid(
 ): void {
   const dot = Math.max(1, pitch - Math.max(1, Math.round(pitch / 6)));
   const inset = (pitch - dot) >> 1;
+  const advance = grid.cols * pitch + matrixDigitGap(pitch);
   for (let index = 0; index < text.length; index++) {
     const rows = grid.glyphs[text[index]!];
     if (!rows) continue;
-    const glyphX = x + index * grid.cols * pitch;
+    const glyphX = x + index * advance;
     for (let row = 0; row < grid.rows; row++) {
       const line = rows[row]!;
       for (let col = 0; col < grid.cols; col++) {
