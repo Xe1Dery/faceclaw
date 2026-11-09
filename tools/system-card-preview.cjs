@@ -112,28 +112,94 @@ function drawBatteryBlock(image, right, top) {
   return width;
 }
 
-/** Hand-drawn bell, same ascii-art idiom as battery.ts icons. */
-const BELL_ROWS = [
-  "....##....",
-  "...####...",
-  "..######..",
-  "..######..",
-  ".########.",
-  "##########",
-  "##########",
-  "##########",
-  "##########",
-  "##########",
-  "..........",
-  "...####...",
-];
-function drawBell(image, x, top, value) {
-  for (let row = 0; row < BELL_ROWS.length; row++) {
-    for (let col = 0; col < BELL_ROWS[row].length; col++) {
-      if (BELL_ROWS[row][col] === "#") image.fillRect(x + col, top + row, 1, 1, value);
+/**
+ * Hand-drawn bells, same ascii-art idiom as battery.ts icons. The card draws
+ * BELL_VARIANT; the sheet PNG shows every variant so one can be picked.
+ */
+const BELL_VARIANTS = {
+  // Filled dome, flat rim, clapper bar.
+  solid: [
+    "....##....",
+    "...####...",
+    "..######..",
+    "..######..",
+    ".########.",
+    "##########",
+    "##########",
+    "##########",
+    "##########",
+    "##########",
+    "..........",
+    "...####...",
+  ],
+  // Stroked outline bell (Lucide-like), open at the bottom.
+  outline: [
+    "....##....",
+    "...#..#...",
+    "..#....#..",
+    "..#....#..",
+    ".#......#.",
+    "#........#",
+    "#........#",
+    "#........#",
+    "#........#",
+    "##########",
+    "..........",
+    "...#..#...",
+  ],
+  // Taller, narrower dome — reads well at arm's length.
+  tall: [
+    "....##....",
+    "...####...",
+    "..######..",
+    "..######..",
+    "..######..",
+    "..######..",
+    ".########.",
+    ".########.",
+    "##########",
+    "##########",
+    "..........",
+    "....##....",
+  ],
+  // Minimal: no handle, straight flare, short.
+  minimal: [
+    "...####...",
+    "..######..",
+    ".########.",
+    "##########",
+    "##########",
+    "##########",
+    "##########",
+    "##########",
+    "..........",
+    "...####...",
+  ],
+  // Filled dome with a round clapper dot under the rim.
+  clapper: [
+    "....##....",
+    "..######..",
+    ".########.",
+    ".########.",
+    "##########",
+    "##########",
+    "##########",
+    "##########",
+    "##########",
+    "##########",
+    "..........",
+    "....##....",
+  ],
+};
+const BELL_VARIANT = "solid"; // the card draws this one until another is picked
+
+function drawBell(image, x, top, value, rows = BELL_VARIANTS[BELL_VARIANT]) {
+  for (let row = 0; row < rows.length; row++) {
+    for (let col = 0; col < rows[row].length; col++) {
+      if (rows[row][col] === "#") image.fillRect(x + col, top + row, 1, 1, value);
     }
   }
-  return BELL_ROWS[0].length;
+  return rows[0].length;
 }
 
 /** Bell + count, right-aligned into the bottom-right corner. */
@@ -144,25 +210,26 @@ function drawNotificationCounter(image, count, bottom) {
   const gap = 6;
   const totalW = bellW + gap + textW;
   const x = W - PAD - totalW;
-  const bellTop = bottom - BELL_ROWS.length;
+  const bellTop = bottom - 12;
   drawBell(image, x, bellTop, count > 0 ? 230 : 90);
   image.drawText(small, x + bellW + gap, bottom - small.lineHeight, text, count > 0 ? 230 : 90);
 }
 
-/** OpenClaw link state, left-aligned into the bottom-left corner. */
+/**
+ * OpenClaw link state, left-aligned into the bottom-left corner. The square
+ * is always sharp-cornered: filled = connected, hollow = disconnected,
+ * hollow + center dot = reconnecting.
+ */
 function drawConnection(image, state, bottom) {
   const label = { ok: "OpenClaw: ок", reconnecting: "OpenClaw: …", down: "OpenClaw: ОБРЫВ" }[state];
   const value = { ok: 170, reconnecting: 170, down: 255 }[state];
   const dotR = 4;
   const cy = bottom - small.lineHeight / 2 - 1;
-  // status dot (filled square — the panel is a pixel grid anyway)
-  image.fillRect(PAD, cy - dotR, dotR * 2, dotR * 2, value);
-  if (state === "down") {
-    // carve an X into the dot so colour alone is not the only signal
-    for (let i = 0; i < dotR * 2; i++) {
-      image.fillRect(PAD + i, cy - dotR + i, 1, 1, 0);
-      image.fillRect(PAD + i, cy + dotR - i - 1, 1, 1, 0);
-    }
+  if (state === "ok") {
+    image.fillRect(PAD, cy - dotR, dotR * 2, dotR * 2, value);
+  } else {
+    image.drawRect(PAD, cy - dotR, dotR * 2, dotR * 2, value);
+    if (state === "reconnecting") image.fillRect(PAD + dotR - 1, cy - 1, 2, 2, value);
   }
   image.drawText(small, PAD + dotR * 2 + 6, bottom - small.lineHeight, label, value);
 }
@@ -271,6 +338,30 @@ for (const spec of variants) {
   written.push({ ...spec, png });
 }
 
+/**
+ * Bell comparison sheet: every BELL_VARIANTS glyph at 4x (chunky pixels are
+ * how they read on the lens) with its name and a live 3-count counter, so a
+ * variant can be picked from the sheet and set in BELL_VARIANT.
+ */
+function drawBellSheet() {
+  const names = Object.keys(BELL_VARIANTS);
+  const scale = 4;
+  const cellH = 12 * scale + 40;
+  const image = new GrayImage(W, cellH * names.length, 0);
+  names.forEach((name, i) => {
+    const top = i * cellH;
+    const rows = BELL_VARIANTS[name];
+    for (let y = 0; y < rows.length; y++)
+      for (let x = 0; x < rows[y].length; x++)
+        if (rows[y][x] === "#") image.fillRect(PAD + x * scale, top + y * scale, scale, scale, 230);
+    image.drawText(small, PAD + 10 * scale + 16, top + 6, `${name}  (сейчас в карте: ${BELL_VARIANT})`, 170);
+    image.drawText(small, PAD + 10 * scale + 16, top + 6 + small.lineHeight + 4, "3", 230);
+    image.drawLine(PAD, top + cellH - 8, W - PAD, top + cellH - 8, 60);
+  });
+  return image;
+}
+const bellsPng = writePng("bells", drawBellSheet());
+
 const html = `<!doctype html>
 <meta charset="utf-8">
 <title>System Card — redesign preview</title>
@@ -282,13 +373,16 @@ const html = `<!doctype html>
 </style>
 <h1>System Card — редизайн (640×480, отрисовано настоящим прикладным кодом)</h1>
 <p class="note">Время — DisplayOTF 1:1 (шрифт сам состоит из квадратов с зазорами), растеризация 240px → 1bpp, часы над минутами.
-Батарея справа сверху — настоящая отрисовка из graphics/battery.ts, без изменений.</p>
+Батарея справа сверху — настоящая отрисовка из graphics/battery.ts, без изменений.
+Индикатор линка: залитый квадрат = подключен, пустой (только рамка) = обрыв, рамка с точкой = переподключение.</p>
 ${written
   .map(
     (w) => `<h2>${w.name}</h2>
 <div class="lens"><img src="${w.png}" width="640" height="480"></div>`,
   )
   .join("\n")}
+<h2>Варианты колокольчика (4×, с подписями)</h2>
+<img src="${bellsPng}" width="640">
 `;
 fs.writeFileSync(path.join(OUT, "preview.html"), html);
-console.log(`wrote ${written.length} PNGs + preview.html to ${OUT}`);
+console.log(`wrote ${written.length + 1} PNGs + preview.html to ${OUT}`);
