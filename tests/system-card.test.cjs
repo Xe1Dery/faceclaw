@@ -7,11 +7,12 @@ const ts = require('typescript');
 
 /**
  * The stock-G2 System Card: a big stacked dot-matrix clock centred from the
- * pre-rasterized DisplayOTF JSONs, the RU date top left, the OpenClaw link
- * square bottom left, and the notification bell counter bottom right. This
- * harness paints the real widget onto a recording canvas and asserts on the
- * recorded draws; the matrix fonts load through a mocked @nativescript/core
- * from the real shipped JSON assets.
+ * logical DisplayOTF dot grid (uniform square dots with a visible gap at
+ * any pitch), the RU date top left, the OpenClaw link square bottom left,
+ * and the notification bell counter bottom right. No weather block: the
+ * card dropped it. This harness paints the real widget onto a recording
+ * canvas and asserts on the recorded draws; the matrix grid loads through a
+ * mocked @nativescript/core from the real shipped JSON asset.
  */
 function load(file, dependencies, globals = {}) {
   const context = { exports: {}, console, require: (name) => {
@@ -83,7 +84,6 @@ function harness(options = {}) {
       GrayImage: RecordingImage,
       imageFromAsciiArt: (lines) => ({ width: Math.max(...lines.map((l) => l.length)), height: lines.length }),
     },
-    '../../../native/location-permissions': { ensureLocationPermission: async () => false, hasLocationPermission: () => false },
     '../../../native/notification-icons': {
       ALL_NOTIFICATIONS: 0x7fffffff,
       onAndroidNotificationsChanged: () => () => {},
@@ -92,7 +92,6 @@ function harness(options = {}) {
       }),
     },
     '../../../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
-    '../../../native/weather': { weatherBridge: { onStateChange: () => () => {}, snapshot: () => ({}), refreshNow: async () => {} } },
     '../../../ui/clock-format': { formatClockTime: () => state.time },
     '../../../ui/dashboard-settings': settings,
     '../../../ui/menu': {},
@@ -105,8 +104,6 @@ function harness(options = {}) {
       timerPhase: () => 'running', timerRemainingMs: () => 0,
     },
     '../../../ui/metrics': { lineStep: (f) => f.lineHeight + 2 },
-    '../../weather/weather-icons': { drawWeatherReading: () => {}, measureWeatherReading: () => 0, weatherReading: () => null },
-    '../../weather/weather-settings': { weatherShowOnSystemCardSetting: new Setting({ storageKey: 'weather.showOnSystemCard', defaultValue: false }) },
     '../../../assistant/bridge-client': { assistantBridge: { state: () => ({ phase: state.bridgePhase }), onStateChange: () => () => {} } },
     '../matrix-font': matrixFont,
     '../glance-font': { glanceFont: { large: () => font(32, 16), medium: () => font(24, 12), small: () => font(16, 8) } },
@@ -121,34 +118,36 @@ const paint = (h, width, height) => {
   return image;
 };
 
-test('the clock paints as stacked matrix digits, hours over minutes, centred', () => {
+test('the clock paints as stacked matrix digits, uniform square dots, hours over minutes, centred', () => {
   const h = harness({ time: '14:05' });
   const image = paint(h, 640, 480);
-  // The 240px raster at 1:1: digit cells 133x168, two lines of two digits.
+  // The grid at the biggest pitch that fits 640x480 (24): digit cells
+  // 144x216, two lines of two digits, dots 20px squares with a 4px gap.
   const lit = image.rects.filter((r) => r.value === 235);
-  assert.ok(lit.length > 200, `expected a matrix clock, got ${lit.length} lit pixels`);
-  const xs = lit.map((r) => r.x);
+  assert.ok(lit.length > 80, `expected a matrix clock, got ${lit.length} lit dots`);
+  assert.ok(lit.every((r) => r.width === r.height && r.width === 20), 'every dot is a uniform square');
+  assert.ok(lit.every((r) => r.width < 24), 'every dot leaves a visible gap');
   const ys = [...new Set(lit.map((r) => r.y))].sort((a, b) => a - b);
-  // Hours occupy the upper digit row, minutes the lower: two rows of 168px
-  // separated by the inter-line gap (~20px).
-  const hours = lit.filter((r) => r.y < ys[0] + 168);
+  // Hours occupy the upper digit line, minutes the lower: two lines of
+  // 216px (9 rows at pitch 24) separated by the inter-line gap.
+  const hours = lit.filter((r) => r.y < ys[0] + 216);
   const minutes = lit.filter((r) => !hours.includes(r));
-  assert.ok(hours.length > 50 && minutes.length > 50, 'two stacked digit rows');
-  assert.ok(Math.min(...xs) > 100 && Math.max(...lit.map((r) => r.x + r.width)) < 540, 'clock stays clear of the side columns');
-  // The block is centred horizontally (glyphs sit centred in their cells, so
-  // the lit span, not the cell grid, is what the card centres).
-  assert.ok(Math.abs((Math.min(...xs) + Math.max(...lit.map((r) => r.x + r.width))) / 2 - 320) < 12, 'clock centred horizontally');
-  // Vertically centred in the card.
+  assert.ok(hours.length > 40 && minutes.length > 40, 'two stacked digit rows');
+  assert.ok(Math.min(...lit.map((r) => r.x)) > 100 && Math.max(...lit.map((r) => r.x + r.width)) < 540, 'clock stays clear of the side columns');
+  // The digit block is centred in the card: the lit span sits within a few
+  // px of the card's centre on both axes (the '14' cells span 176..464 and
+  // the block's vertical extent is 11..469).
+  assert.ok(Math.abs((Math.min(...lit.map((r) => r.x)) + Math.max(...lit.map((r) => r.x + r.width))) / 2 - 320) < 16, "clock centred horizontally");
   const top = Math.min(...lit.map((r) => r.y));
   const bottom = Math.max(...lit.map((r) => r.y + r.height));
-  assert.ok(Math.abs((top + bottom) / 2 - 240) < 40, `block centred (span ${top}..${bottom})`);
+  assert.ok(Math.abs((top + bottom) / 2 - 240) < 16, `block centred (span ${top}..${bottom})`);
   // No plain-text clock fallback was drawn (the link label's colon is not it).
   assert.ok(!image.texts.some((t) => /^\d{1,2}:\d{2}/.test(t.text)), 'matrix clock replaces the text clock');
 });
 
 test('a card too small for the matrix falls back to the plain large clock', () => {
   const h = harness({ time: '14:05' });
-  const image = paint(h, 288, 96);
+  const image = paint(h, 20, 20);
   assert.ok(image.texts.some((t) => t.text === '14:05' && t.size === 32), 'text clock drawn instead');
 });
 
@@ -163,20 +162,18 @@ test('the date paints top-left in RU dd.mm.yy form', () => {
   assert.equal(date.y, 8);
 });
 
-test('the link square is filled when connected, hollow with a dot while redialing, hollow and bright when down', () => {
+test('the link is a bare square: filled when connected, hollow with a dot while redialing, hollow and bright when down', () => {
   const connected = paint(harness({ bridgePhase: 'connected' }), 640, 480);
   assert.ok(connected.rects.some((r) => r.width === 8 && r.height === 8 && r.value === 170), 'filled square');
-  assert.ok(connected.texts.some((t) => t.text === 'OpenClaw: ок'));
+  assert.ok(!connected.texts.some((t) => t.text.includes('OpenClaw')), 'no label text');
 
   const dialing = paint(harness({ bridgePhase: 'connecting' }), 640, 480);
   assert.ok(dialing.outlines.some((r) => r.width === 8 && r.height === 8), 'hollow square');
   assert.ok(dialing.rects.some((r) => r.width === 2 && r.height === 2), 'centre dot');
-  assert.ok(dialing.texts.some((t) => t.text === 'OpenClaw: …'));
 
   const down = paint(harness({ bridgePhase: 'failed' }), 640, 480);
   assert.ok(down.outlines.some((r) => r.width === 8 && r.height === 8 && r.value === 255), 'hollow bright square');
   assert.ok(!down.rects.some((r) => r.width === 8 && r.height === 8), 'not filled');
-  assert.ok(down.texts.some((t) => t.text === 'OpenClaw: ОБРЫВ'));
 });
 
 test('notifications show as a bell counter; the count drives its brightness', () => {
@@ -194,7 +191,8 @@ test('toggles hide their blocks and the link toggle is in the settings menu', ()
   h.values.set('glanceboard.systemCard.showLink', false);
   const image = paint(h, 640, 480);
   assert.equal(image.rects.filter((r) => r.value === 235).length, 0, 'no clock');
-  assert.ok(!image.texts.some((t) => t.text.startsWith('OpenClaw')), 'no link');
+  assert.ok(!image.rects.some((r) => r.width === 8 && r.height === 8), 'no link square');
+  assert.ok(!image.outlines.some((r) => r.width === 8 && r.height === 8), 'no link square outline');
   assert.ok(!image.texts.some((t) => /^\d+$/.test(t.text)), 'no counter');
   const labels = h.widget.systemCardSettingsMenuItems().map((item) => item.label);
   assert.ok(labels.includes('OpenClaw link'), labels.join(','));

@@ -7,10 +7,8 @@ import {
   type BatteryDevice,
 } from "../../../graphics/battery";
 import { GrayImage, imageFromAsciiArt, type UiFont } from "../../../graphics/image";
-import { ensureLocationPermission, hasLocationPermission } from "../../../native/location-permissions";
 import { ALL_NOTIFICATIONS, onAndroidNotificationsChanged, readActiveNotificationIcons } from "../../../native/notification-icons";
 import { readPhoneBatteryState } from "../../../native/phone-battery";
-import { weatherBridge } from "../../../native/weather";
 import { formatClockTime } from "../../../ui/clock-format";
 import {
   batteryDisplayModeSetting,
@@ -31,17 +29,14 @@ import { truncateText } from "../../../graphics/textwrap";
 import { timerEngine } from "../../timer/timer-engine";
 import { formatCountdown, sortTimers, timerDisplayName, timerPhase, timerRemainingMs } from "../../timer/timer-model";
 import { lineStep } from "../../../ui/metrics";
-import { drawWeatherReading, measureWeatherReading, weatherReading } from "../../weather/weather-icons";
-import { weatherShowOnSystemCardSetting } from "../../weather/weather-settings";
 import { assistantBridge } from "../../../assistant/bridge-client";
 import {
-  drawMatrixText,
-  loadMatrixFont,
-  measureMatrixText,
-  MATRIX_FONT_48,
-  MATRIX_FONT_96,
-  MATRIX_FONT_240,
-  type MatrixFont,
+  drawMatrixGrid,
+  fitMatrixPitch,
+  loadMatrixGrid,
+  matrixBlockHeight,
+  matrixLineGap,
+  measureMatrixGrid,
 } from "../matrix-font";
 import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
@@ -49,9 +44,7 @@ import { type GlanceWidget } from "../widget";
 const PAD = 8;
 const BATTERY_ITEM_GAP = 12;
 const BATTERY_LABEL_VALUE = 150;
-/** Gap between the battery block and the weather reading stacked after it. */
-const SIDE_BLOCK_GAP = 6;
-/** Fraction of one digit row's height left between the hours and the minutes. */
+/** Fraction of one digit line's height left between the hours and the minutes. */
 const CLOCK_LINE_GAP_FRACTION = 0.12;
 /** Rows between the clock and the timers, and between the timers and the bottom row. */
 const TIMERS_GAP = 4;
@@ -107,12 +100,6 @@ const BELL_ART = [
 const BELL_ICON = imageFromAsciiArt(BELL_ART, { "#": 255, ".": 0 });
 
 /** The OpenClaw link's bottom-row text, Russian to match the wearer's setup. */
-export function linkStatusLabel(phase: string): string {
-  if (phase === "connected") return "OpenClaw: ок";
-  if (phase === "connecting") return "OpenClaw: …";
-  return "OpenClaw: ОБРЫВ";
-}
-
 export const systemCardShowTimeSetting = new ConfigSettingBoolean({
   id: "glanceboard-system-card-show-time",
   label: "Time",
@@ -153,7 +140,7 @@ export const systemCardShowLinkSetting = new ConfigSettingBoolean({
   storageKey: "glanceboard.systemCard.showLink",
   defaultValue: true,
   description:
-    "Show the OpenClaw assistant bridge's link state on the system card: a filled square when connected, an empty one when the link is down.",
+    "Show the OpenClaw assistant bridge's link state on the system card as a square: filled when connected, hollow with a dot while redialing, hollow and bright when the link is down.",
 });
 
 export const systemCardFlipHorizontalSetting = new ConfigSettingBoolean({
@@ -162,7 +149,7 @@ export const systemCardFlipHorizontalSetting = new ConfigSettingBoolean({
   storageKey: "glanceboard.systemCard.flipHorizontal",
   defaultValue: false,
   description:
-    "Mirror the system card left to right: date, timers and the link state on the right, batteries, weather and the notification counter on the left.",
+    "Mirror the system card left to right: date, timers and the link state on the right, batteries and the notification counter on the left.",
 });
 
 export const systemCardFlipVerticalSetting = new ConfigSettingBoolean({
@@ -171,24 +158,17 @@ export const systemCardFlipVerticalSetting = new ConfigSettingBoolean({
   storageKey: "glanceboard.systemCard.flipVertical",
   defaultValue: false,
   description:
-    "Mirror the system card top to bottom: the link state and notification counter along the top; date, batteries and weather along the bottom.",
+    "Mirror the system card top to bottom: the link state and notification counter along the top; date and batteries along the bottom.",
 });
 
 /**
- * The system card's submenu in Glanceboard > Settings. Weather is the
- * Weather app's "Show on system card" setting under a shorter label.
+ * The system card's submenu in Glanceboard > Settings.
  */
 export function systemCardSettingsMenuItems(): MenuItem[] {
   return [
     toggleSettingMenuItem(systemCardShowTimeSetting),
     toggleSettingMenuItem(systemCardShowDateSetting),
     toggleSettingMenuItem(systemCardShowBatterySetting),
-    toggleSettingMenuItem(weatherShowOnSystemCardSetting, {
-      label: "Weather",
-      onChange: (_ctx, enabled) => {
-        if (enabled) requestWeatherLocationAccess();
-      },
-    }),
     toggleSettingMenuItem(systemCardShowNotificationsSetting),
     toggleSettingMenuItem(systemCardShowLinkSetting),
     toggleSettingMenuItem(systemCardFlipHorizontalSetting),
@@ -197,29 +177,17 @@ export function systemCardSettingsMenuItems(): MenuItem[] {
 }
 
 /**
- * Weather switched on without location access: ask for it now, as the
- * Weather app's own toggle does, since the background refresh has no screen
- * to prompt from.
- */
-function requestWeatherLocationAccess(): void {
-  if (hasLocationPermission()) return;
-  void ensureLocationPermission().then((granted) => {
-    if (granted) void weatherBridge.refreshNow();
-  }).catch((error) => console.warn(`Weather permission: ${error}`));
-}
-
-/**
  * The stock-G2-style clock face: the big dot-matrix time (hours stacked over
- * minutes, DisplayOTF raster) centred, the date top left, the phone/watch/G2/R1
- * battery indicators top right (the Wear OS watch's only while one is
- * reachable, and the weather under them when enabled), the OpenClaw bridge's
- * link state bottom left, and the phone's active notifications as a bell
- * counter bottom right. Running timers fill the band under the clock. Every
- * block but the timers can be turned off, and the layout mirrored either way,
- * in the card's submenu of Glanceboard > Settings. Battery style and
- * per-device visibility follow Settings > Customization > Battery indicators,
- * so the card agrees with the bar. Countdowns tick once a second only while
- * one is running.
+ * minutes, the DisplayOTF dot grid drawn at the biggest pitch that fits)
+ * dead centre, the date top left, the phone/watch/G2/R1 battery indicators
+ * top right (the Wear OS watch's only while one is reachable), the OpenClaw
+ * bridge's link square bottom left, and the phone's active notifications as
+ * a bell counter bottom right. Running timers fill the band under the
+ * clock. Every block but the timers can be turned off, and the layout
+ * mirrored either way in the card's submenu of Glanceboard > Settings.
+ * Battery style and per-device visibility follow Settings > Customization >
+ * Battery indicators, so the card agrees with the bar. Countdowns tick once
+ * a second only while one is running.
  */
 export class SystemCardWidget implements GlanceWidget {
   private requestRender: (() => void) | null = null;
@@ -228,7 +196,6 @@ export class SystemCardWidget implements GlanceWidget {
   private unsubscribeNotifications: (() => void) | null = null;
   private unsubscribeSettings: (() => void) | null = null;
   private unsubscribeTimers: (() => void) | null = null;
-  private unsubscribeWeather: (() => void) | null = null;
   private unsubscribeBridge: (() => void) | null = null;
 
   start(requestRender: () => void): void {
@@ -240,8 +207,6 @@ export class SystemCardWidget implements GlanceWidget {
       this.syncSecondTick();
       this.requestRender?.();
     });
-    // The Weather app's indicator keeps the bridge refreshing; this only listens.
-    this.unsubscribeWeather = weatherBridge.onStateChange(() => this.requestRender?.());
     // The link square repaints the moment the assistant bridge's state flips.
     this.unsubscribeBridge = assistantBridge.onStateChange(() => this.requestRender?.());
     this.syncSecondTick();
@@ -259,8 +224,6 @@ export class SystemCardWidget implements GlanceWidget {
     this.unsubscribeSettings = null;
     this.unsubscribeTimers?.();
     this.unsubscribeTimers = null;
-    this.unsubscribeWeather?.();
-    this.unsubscribeWeather = null;
     this.unsubscribeBridge?.();
     this.unsubscribeBridge = null;
   }
@@ -298,8 +261,8 @@ export class SystemCardWidget implements GlanceWidget {
     const now = new Date();
     const { width, height } = image;
 
-    // Unflipped, the date sits top left and the batteries (then the weather)
-    // stack down the right edge, the big clock is centred, and the link
+    // Unflipped, the date sits top left and the batteries stack down the
+    // right edge, the big clock is centred, and the link
     // state and the notification counter take the bottom corners. Running
     // timers fill whatever band is left under the clock. The flips mirror
     // where each block sits (positions below are given for the unflipped
@@ -312,8 +275,6 @@ export class SystemCardWidget implements GlanceWidget {
     const sideBlocks: SideBlock[] = [];
     const batteryItems = systemCardShowBatterySetting.get() ? collectBatteryItems() : [];
     if (batteryItems.length) sideBlocks.push(batteryBlock(small, batteryItems));
-    const weather = weatherShowOnSystemCardSetting.get() ? weatherBlock(medium, now.getTime()) : null;
-    if (weather) sideBlocks.push(weather);
     const side: Rect[] = [];
     let sideOffset = PAD;
     for (const block of sideBlocks) {
@@ -325,7 +286,7 @@ export class SystemCardWidget implements GlanceWidget {
       };
       block.draw(image, rect.x, rect.y);
       side.push(rect);
-      sideOffset += block.height + SIDE_BLOCK_GAP;
+      sideOffset += block.height;
     }
     // Text in the main column stops short of whichever side blocks share its
     // rows, and hugs the card's outer edge.
@@ -347,52 +308,37 @@ export class SystemCardWidget implements GlanceWidget {
       image.drawText(medium, placeX(PAD, medium.measureText(dateText)), top, dateText, 170);
     }
 
-    // Bottom row geometry, needed before the clock so it can centre in the
-    // space the bottom row leaves it.
+    // Bottom row geometry, needed by the timers band and the bottom corners.
     const bottomRowHeight = small.lineHeight;
     const showLink = systemCardShowLinkSetting.get();
     const showNotifications = systemCardShowNotificationsSetting.get();
     const bottomTop = height - PAD - bottomRowHeight;
 
-    // Centre: the big stacked matrix clock, hours over minutes. The largest
-    // raster that fits between the edges (and the side blocks sharing the
-    // clock's rows) wins; a card too small for any raster draws the time as
-    // plain large text instead.
+    // Centre: the big stacked matrix clock, hours over minutes, dead centre
+    // of the card. Dots come from the logical matrix grid drawn at paint
+    // time — uniform squares with a visible gap at any pitch — and the
+    // biggest pitch that fits wins, so the clock is as large as the slot
+    // allows. It uses the whole card: the edge blocks all hug the borders
+    // and the clock is a narrow centred column, so they share a card
+    // without sharing pixels (running timers, drawn after, still take
+    // their band as before). A card too small for even pitch 1 (or a
+    // broken grid asset) draws the time as plain large text instead.
     if (systemCardShowTimeSetting.get()) {
       const { hours, minutes } = clockTimeParts(now);
-      const clockTop = PAD + (systemCardShowDateSetting.get() ? medium.lineHeight + TIMERS_GAP : 0);
-      // With the vertical flip the bottom row moved to the top, so the
-      // clock's free band is measured from under it instead of above it.
-      const roomTop = flipY ? PAD + bottomRowHeight + TIMERS_GAP : clockTop;
-      const roomBottom = flipY ? height - PAD : bottomTop - TIMERS_GAP;
-      const roomRows = roomBottom - roomTop;
-      const clockSpan = span(roomTop, roomBottom);
-      const roomCols = clockSpan.right - clockSpan.left;
-      // Biggest first: the 240px raster at 1:1 matches the approved full-lens
-      // preview; smaller canvases step down through the 96px and 48px rasters.
-      let chosen: { font: MatrixFont; scale: number; blockH: number } | null = null;
-      for (const asset of [MATRIX_FONT_240, MATRIX_FONT_96, MATRIX_FONT_48] as const) {
-        const font = loadMatrixFont(asset);
-        if (!font) continue;
-        const blockH = font.cellH * 2 + Math.max(2, Math.round(font.cellH * CLOCK_LINE_GAP_FRACTION));
-        if (blockH <= roomRows && measureMatrixText(font, hours) <= roomCols) {
-          chosen = { font, scale: 1, blockH };
-          break;
-        }
-      }
-      if (chosen) {
-        const { font, scale, blockH } = chosen;
-        const digitH = font.cellH * scale;
-        const gap = blockH - digitH * 2;
-        const blockW = measureMatrixText(font, hours, scale);
-        const top = Math.max(roomTop, (height - blockH) >> 1);
-        const left = Math.max(clockSpan.left, ((clockSpan.left + clockSpan.right) / 2 - blockW / 2) | 0);
-        drawMatrixText(image, font, left, top, hours, 235, scale);
-        drawMatrixText(image, font, left, top + digitH + gap, minutes, 235, scale);
+      const grid = loadMatrixGrid();
+      const pitch = grid ? fitMatrixPitch(grid, height - 2 * PAD, width - 2 * PAD, CLOCK_LINE_GAP_FRACTION) : 0;
+      if (grid && pitch > 0) {
+        const blockH = matrixBlockHeight(grid, pitch, CLOCK_LINE_GAP_FRACTION);
+        const blockW = measureMatrixGrid(grid, hours, pitch);
+        const top = (height - blockH) >> 1;
+        const left = (width - blockW) >> 1;
+        const gap = matrixLineGap(grid, pitch, CLOCK_LINE_GAP_FRACTION);
+        drawMatrixGrid(image, grid, left, top, hours, 235, pitch);
+        drawMatrixGrid(image, grid, left, top + grid.rows * pitch + gap, minutes, 235, pitch);
       } else {
         const large = glanceFont.large();
         const timeText = formatClockTime(now);
-        const top = Math.max(roomTop, ((roomTop + roomBottom) / 2 - large.lineHeight / 2) | 0);
+        const top = (height - large.lineHeight) >> 1;
         const { left, right } = span(top, top + large.lineHeight);
         image.drawText(large, ((left + right) / 2 - large.measureText(timeText) / 2) | 0, top, timeText, 235);
       }
@@ -414,12 +360,11 @@ export class SystemCardWidget implements GlanceWidget {
     // Bottom left: the OpenClaw bridge's link state. A sharp-cornered square
     // (never rounded, so it reads as a status lamp, not a button): filled
     // while connected, hollow when the link is down, hollow with a centre dot
-    // while redialing.
+    // while redialing — the square alone carries the state, no label text.
     if (showLink) {
       const phase = assistantBridge.state().phase;
       const rowY = placeY(bottomTop, bottomRowHeight);
       const squareY = rowY + (((bottomRowHeight - LINK_SQUARE) / 2) | 0);
-      const down = phase === "failed" || phase === "idle";
       const value = phase === "failed" ? 255 : phase === "idle" ? 120 : 170;
       const squareX = placeX(PAD, LINK_SQUARE);
       if (phase === "connected") image.fillRect(squareX, squareY, LINK_SQUARE, LINK_SQUARE, value);
@@ -429,8 +374,6 @@ export class SystemCardWidget implements GlanceWidget {
           image.fillRect(squareX + (LINK_SQUARE >> 1) - 1, squareY + (LINK_SQUARE >> 1) - 1, 2, 2, value);
         }
       }
-      const labelX = flipX ? squareX - small.measureText(linkStatusLabel(phase)) - LINK_SQUARE : squareX + LINK_SQUARE + 4;
-      image.drawText(small, labelX, rowY, linkStatusLabel(phase), value);
     }
 
     // Bottom right: active notifications as a bell + count, the bell centred
@@ -528,19 +471,6 @@ function batteryBlock(font: UiFont, items: readonly BatteryItem[]): SideBlock {
         x += width + BATTERY_ITEM_GAP;
       }
     },
-  };
-}
-
-/** The current weather's condition icon and temperature, or null without a fresh reading. */
-function weatherBlock(font: UiFont, nowMs: number): SideBlock | null {
-  const reading = weatherReading(weatherBridge.snapshot(), nowMs);
-  if (!reading) return null;
-  const iconSize = font.lineHeight + 4;
-  const height = Math.max(iconSize, font.lineHeight);
-  return {
-    width: Math.ceil(measureWeatherReading(reading, font, iconSize)),
-    height,
-    draw: (image, left, top) => drawWeatherReading(image, reading, font, iconSize, left, top, height, 200),
   };
 }
 

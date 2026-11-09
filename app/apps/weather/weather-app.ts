@@ -3,7 +3,7 @@ import { weatherBridge } from "../../native/weather";
 import { onAnySettingChanged, toggleSettingMenuItem } from "../../ui/dashboard-settings";
 import { openSettingsSubMenu } from "../../ui/dashboard/settings-panel";
 import { WeatherLayer } from "./weather";
-import { weatherShowInStatusBarSetting, weatherShowOnSystemCardSetting } from "./weather-settings";
+import { weatherShowInStatusBarSetting } from "./weather-settings";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -67,7 +67,6 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
           ctx.stack.pop();
           openSettingsSubMenu(ctx, "Weather settings", [
             toggleSettingMenuItem(weatherShowInStatusBarSetting, indicatorSettingOptions),
-            toggleSettingMenuItem(weatherShowOnSystemCardSetting, indicatorSettingOptions),
           ]);
         },
       },

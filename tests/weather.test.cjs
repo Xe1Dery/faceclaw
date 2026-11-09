@@ -250,7 +250,6 @@ function indicatorHarness() {
   const settings = new Map(), settingListeners = new Set(), stateListeners = new Set(), trays = [];
   const background = [];
   let state = { phase: 'ready', current: null, forecast: [], lastUpdatedMs: null };
-  let systemCardInUse = false;
   class GrayImage {
     constructor(width, height) { this.width = width; this.height = height; this.draws = []; }
     drawImage(_source, x, y) { this.draws.push(['image', x, y]); }
@@ -277,12 +276,10 @@ function indicatorHarness() {
       onAnySettingChanged: listener => { settingListeners.add(listener); return () => settingListeners.delete(listener); },
     },
     '../../ui/shell/shell': { shell: { setTrayIcon: (id, icon) => trays.push([id, icon]) } },
-    '../glanceboard/configuration': { isSystemCardWidgetInUse: () => systemCardInUse },
   })('app/apps/weather/weather-indicators.ts');
   return {
     api, trays, background,
     setSetting(key, value) { settings.set(key, value); for (const listener of settingListeners) listener(); },
-    setSystemCardInUse(value) { systemCardInUse = value; for (const listener of settingListeners) listener(); },
     setState(next) { state = next; for (const listener of stateListeners) listener(state); },
   };
 }
@@ -290,18 +287,11 @@ function indicatorHarness() {
 test('Weather tray icon follows the status-bar setting and hides a stale reading', () => {
   const h = indicatorHarness();
   h.api.startWeatherIndicators();
-  assert.deepEqual(h.background, [false], 'system-card weather is on by default, but no system card is showing');
+  assert.deepEqual(h.background, [false], 'the status-bar indicator is off by default');
   assert.equal(h.trays.length, 0, 'nothing shown, nothing to clear');
 
-  h.setSystemCardInUse(true);
-  assert.equal(h.background.at(-1), true, 'the system card alone keeps refreshes running');
-  assert.equal(h.trays.length, 0);
-  h.setSetting('weather.showOnSystemCard', false);
-  assert.equal(h.background.at(-1), false, 'not with its weather turned off');
-  h.setSetting('weather.showOnSystemCard', true);
-  assert.equal(h.background.at(-1), true);
-
   h.setSetting('weather.showInStatusBar', true);
+  assert.equal(h.background.at(-1), true, 'the status-bar indicator keeps refreshes running');
   const current = { temperatureF: 71.6, condition: 'rain', isDaytime: true };
   h.setState({ phase: 'ready', current, forecast: [], lastUpdatedMs: Date.now() });
   const [id, icon] = h.trays.at(-1);
@@ -321,7 +311,6 @@ test('Weather tray icon follows the status-bar setting and hides a stale reading
   h.setState({ phase: 'error', current, forecast: [], lastUpdatedMs: Date.now() - 4 * HOUR_MS });
   assert.deepEqual(h.trays.at(-1), ['weather', null]);
 
-  h.setSetting('weather.showOnSystemCard', false);
   h.setSetting('weather.showInStatusBar', false);
   assert.equal(h.background.at(-1), false);
 });

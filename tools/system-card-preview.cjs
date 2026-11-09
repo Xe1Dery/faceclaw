@@ -7,15 +7,15 @@
  * card, and it lied. On a real board the widget never gets the lens: the
  * Glanceboard paints each widget into its SLOT canvas (288x144 in the 2x2
  * layout), composes the slots into a 576x288 board (board.ts), and the glance
- * host centres that board on the 640x480 lens (glance-host.ts). In a 288x144
- * slot the clock falls to the 48px DisplayOTF raster and the side blocks push
- * the clock left of the slot centre — so the honest preview must run the
- * shipping widget code at the shipping geometry, which is what this does:
+ * host centres that board on the 640x480 lens (glance-host.ts) — so the
+ * honest preview must run the shipping widget code at the shipping
+ * geometry, which is what this does:
  *
  * - the widget is the REAL app/apps/glanceboard/widgets/system-card.ts,
  *   transpiled and loaded with the same vm harness as tests/system-card.test.cjs,
- * - the clock rasters are the REAL shipped JSONs in app/fonts/displayotf/,
- *   picked by the widget's own 240/96/48 fit ladder,
+ * - the clock is the REAL logical dot grid in app/fonts/displayotf/, drawn
+ *   by the REAL matrix-font.ts at the pitch the widget itself picks for the
+ *   slot (uniform square dots with a visible gap at any size),
  * - the battery block is the REAL app/graphics/battery.ts,
  * - small text is the REAL Terminus .bdf files (see caveat 1),
  * - the board is composed the way board.ts composes it (slot canvases,
@@ -30,16 +30,14 @@
  *    back to offline and a wearer can pick in Settings > Fonts. Cyrillic
  *    renders (Terminus is cp1251); glyph shapes differ from Roboto, metrics
  *    are close. The matrix clock is unaffected — it is the shipped raster.
- * 2. The weather icon (SVG) is rasterized by Java on-device; the preview
- *    reserves the icon's slot but draws no icon. Temperature text is real.
+ * 2. The card shows no weather: the widget dropped the weather block.
  * 3. y = minWindowTop() is mirrored here for the default Display mode
  *    (band-middle) with the switcher at the bottom; a different Display >
  *    Vertical position or switcher placement moves the board — override
  *    with --y.
  *
  * Usage: node tools/system-card-preview.cjs [--out DIR] [--notifications N]
- *   [--weather on|off] [--layout 2x2|2x3] [--slot N] [--time HH:MM]
- *   [--lines on|off] [--y N]
+ *   [--layout 2x2|2x3] [--slot N] [--time HH:MM] [--lines on|off] [--y N]
  */
 const fs = require("fs");
 const path = require("path");
@@ -87,7 +85,6 @@ function flag(name, fallback) {
 const args = {
   out: flag("--out", path.join(ROOT, "preview", "system-card")),
   notifications: Number(flag("--notifications", 3)),
-  weather: flag("--weather", "on") === "on",
   layout: flag("--layout", "2x2"),
   slot: Number(flag("--slot", 0)),
   time: flag("--time", ""),
@@ -137,8 +134,6 @@ class Setting {
   set(value) { values.set(this.storageKey, value); }
 }
 values.set("display.temperatureUnit", "celsius"); // the wearer's real setting
-values.set("weather.showOnSystemCard", args.weather);
-
 const dashboardSettings = {
   ConfigSettingBoolean: Setting,
   ConfigSettingEnum: Setting,
@@ -154,8 +149,8 @@ const dashboardSettings = {
   toggleSettingMenuItem: (setting) => ({ label: setting.label, onSelect: () => setting.set(!setting.get()) }),
 };
 
-// The matrix loader is the shipping one; it reads the shipping JSON assets
-// through the @nativescript/core shim above (knownFolders.currentApp().getFile).
+// The matrix loader is the shipping one; it reads the shipped grid JSON
+// through the @nativescript/core shim above (File.fromPath).
 const matrixFont = load("app/apps/glanceboard/matrix-font.ts", {
   "@nativescript/core": {
     File: { fromPath: (p) => ({ readTextSync: () => fs.readFileSync(p, "utf8") }) },
@@ -164,38 +159,6 @@ const matrixFont = load("app/apps/glanceboard/matrix-font.ts", {
   "../../graphics/image": {},
 });
 const clockFormat = load("app/ui/clock-format.ts", { "./dashboard-settings": dashboardSettings });
-const temperatureFormat = load("app/apps/weather/temperature-format.ts", {
-  "../../ui/dashboard-settings": dashboardSettings,
-});
-// Real weather block logic; only the Java SVG rasterizer is stubbed (caveat 2).
-const weatherIcons = load("app/apps/weather/weather-icons.ts", {
-  "../../graphics/icons": { renderSvgIcon: () => null },
-  "../../graphics/image": { GrayImage },
-  "../../native/weather": {},
-  "./temperature-format": temperatureFormat,
-});
-const weatherSettings = load("app/apps/weather/weather-settings.ts", {
-  "../../ui/dashboard-settings": dashboardSettings,
-});
-
-// The weather bridge's fixture: a fresh, real-shaped reading.
-const weatherState = {
-  phase: "ready",
-  place: "Home",
-  lastUpdatedMs: NOW.getTime(),
-  current: {
-    temperatureF: 44.6, // 7 C
-    description: "Облачно",
-    humidityPercent: 81,
-    windSpeedMph: 4.5,
-    windDirection: "SW",
-    timestampMs: NOW.getTime(),
-    observed: true,
-    condition: "cloudy",
-    isDaytime: NOW.getHours() >= 6 && NOW.getHours() < 20,
-  },
-  forecast: [],
-};
 
 const states = [
   { name: "connected", phase: "connected" },
@@ -207,7 +170,6 @@ let currentPhase = "connected";
 const systemCard = load("app/apps/glanceboard/widgets/system-card.ts", {
   "../../../graphics/battery": battery,
   "../../../graphics/image": { GrayImage, imageFromAsciiArt },
-  "../../../native/location-permissions": { ensureLocationPermission: async () => false, hasLocationPermission: () => true },
   "../../../native/notification-icons": {
     ALL_NOTIFICATIONS: 0x7fffffff,
     onAndroidNotificationsChanged: () => () => {},
@@ -217,13 +179,6 @@ const systemCard = load("app/apps/glanceboard/widgets/system-card.ts", {
     }),
   },
   "../../../native/phone-battery": { readPhoneBatteryState: () => ({ battery: 78, charging: false }) },
-  "../../../native/weather": {
-    weatherBridge: {
-      onStateChange: () => () => {},
-      snapshot: () => weatherState,
-      refreshNow: async () => {},
-    },
-  },
   "../../../ui/clock-format": clockFormat,
   "../../../ui/dashboard-settings": dashboardSettings,
   "../../../ui/menu": {},
@@ -235,8 +190,6 @@ const systemCard = load("app/apps/glanceboard/widgets/system-card.ts", {
   "../../timer/timer-engine": { timerEngine: { timers: () => [], onChange: () => () => {} } },
   "../../timer/timer-model": timerModel,
   "../../../ui/metrics": { lineStep },
-  "../../weather/weather-icons": weatherIcons,
-  "../../weather/weather-settings": weatherSettings,
   "../../../assistant/bridge-client": {
     assistantBridge: { state: () => ({ phase: currentPhase }), onStateChange: () => () => {} },
   },
@@ -366,7 +319,7 @@ const html = `<!doctype html>
 <h1>System Card — как он выглядит в Glanceboard (${gl.id}, слот ${args.slot}, ${slotRect.width}×${slotRect.height})</h1>
 <p class="note">Настоящий код виджета (widgets/system-card.ts) на настоящем холсте слота; доска собрана как в board.ts и
 поставлена на линзу как в glance-host.ts (x=${boardX}, y=${boardY}). Часы — тот растр DisplayOTF, который виджет сам выбрал под слот
-(обычно 48px — отсюда «прямоугольники вперемешку с пикселями», на 240px растре их нет). Погода${args.weather ? " включена" : " выключена (--weather off)"}, иконка погоды не рисуется (Java-растеризатор), место под неё зарезервировано.
+(логическая сетка 6×9, квадратные точки с видимым зазором, питч подобран под слот). Погоды на карте больше нет.
 Мелкий текст — Terminus (офлайн-фолбэк), на устройстве по умолчанию Roboto-Light — глифы чуть другие, метрики близки.</p>
 ${written
   .map(
@@ -380,5 +333,5 @@ ${written
 `;
 fs.writeFileSync(path.join(args.out, "preview.html"), html);
 console.log(
-  `wrote ${written.length * 4} PNGs + preview.html to ${args.out} (layout ${gl.id}, slot ${args.slot} ${slotRect.width}x${slotRect.height}, board at ${boardX},${boardY}, weather ${args.weather ? "on" : "off"}, notifications ${args.notifications})`,
+  `wrote ${written.length * 4} PNGs + preview.html to ${args.out} (layout ${gl.id}, slot ${args.slot} ${slotRect.width}x${slotRect.height}, board at ${boardX},${boardY}, notifications ${args.notifications})`,
 );

@@ -3,9 +3,8 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { weatherBridge } from "../../native/weather";
 import { onAnySettingChanged } from "../../ui/dashboard-settings";
 import { shell, type TrayWidget } from "../../ui/shell/shell";
-import { isSystemCardWidgetInUse } from "../glanceboard/configuration";
 import { drawWeatherReading, measureWeatherReading, weatherReading, type WeatherReading } from "./weather-icons";
-import { weatherShowInStatusBarSetting, weatherShowOnSystemCardSetting } from "./weather-settings";
+import { weatherShowInStatusBarSetting } from "./weather-settings";
 
 const TRAY_ICON_ID = "weather";
 const TRAY_HEIGHT = 24;
@@ -18,10 +17,8 @@ let trayShown: { key: string; font: UiFont } | null = null;
 
 /**
  * Shell-lifetime subscription: keeps the hourly background refresh running
- * while the status-bar indicator is enabled, or the system-card one is and
- * the system card is on an enabled Glanceboard, and the tray icon in sync.
- * The system card reads the bridge itself while it shows. `widget` makes
- * the tray icon selectable in the switcher.
+ * while the status-bar indicator is enabled, and keeps the tray icon in
+ * sync. `widget` makes the tray icon selectable in the switcher.
  */
 export function startWeatherIndicators(widget?: TrayWidget): void {
   if (started) return;
@@ -33,7 +30,7 @@ export function startWeatherIndicators(widget?: TrayWidget): void {
 
 function syncWeatherIndicators(): void {
   const inStatusBar = weatherShowInStatusBarSetting.get();
-  weatherBridge.setBackgroundRefresh(inStatusBar || (weatherShowOnSystemCardSetting.get() && isSystemCardWidgetInUse()));
+  weatherBridge.setBackgroundRefresh(inStatusBar);
 
   const reading = inStatusBar ? weatherReading(weatherBridge.snapshot(), Date.now()) : null;
   const font = getDefaultSmallFont();
