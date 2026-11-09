@@ -29,6 +29,42 @@ export function singlePlane(image: GrayImage): Plane[] {
   return [{ image, x: 0, y: 0 }];
 }
 
+/**
+ * The shell scene's per-plane budget (see graphics/shell-scene.ts): a plane
+ * encodes to at most 64 KiB, 2 bytes per pixel pair plus a 5-byte header.
+ * A takeover layer's opaque canvas is split into rows of this height so no
+ * strip exceeds it (640 wide: 5 + 320×160 = 51,205).
+ */
+export const SHELL_PLANE_MAX_ROWS = 160;
+
+/**
+ * Split a plane taller than SHELL_PLANE_MAX_ROWS into horizontal strips.
+ * The shell scene caps one plane at 64 KiB (graphics/shell-scene.ts), and a
+ * full-screen opaque canvas — a takeover layer's backdrop — exceeds that at
+ * any strip height the scene still allows full-width content in, so such a
+ * canvas must go up as a stack of strips. A canvas of at most this height
+ * always encodes (640 wide: 5 + 320×160 = 51,205) and stays one plane, so
+ * sparse overlays and window stacks never churn their resource keys. The
+ * strips keep the plane's position and depth; keys are the caller's to
+ * assign (the scene requires one per strip) and the dim belongs on the first
+ * strip alone (see LayerStack.paintLayer).
+ */
+export function splitPlaneRows(plane: Plane, rows = SHELL_PLANE_MAX_ROWS): Plane[] {
+  const baked = plane.image.withDrawsBaked(false);
+  if (!(baked.pixels instanceof Uint8Array) || baked.height <= rows) return [plane];
+  const parts: Plane[] = [];
+  for (let top = 0; top < baked.height; top += rows) {
+    const height = Math.min(rows, baked.height - top);
+    const strip = new GrayImage(baked.width, height, 0);
+    for (let row = 0; row < height; row++) {
+      strip.pixels.set(baked.pixels.subarray((top + row) * baked.width, (top + row) * baked.width + baked.width), row * baked.width);
+    }
+    plane.image.copyPresentationsInto(strip, 0, -top);
+    parts.push({ ...plane, image: strip, y: plane.y + top });
+  }
+  return parts;
+}
+
 /** The planes with their brightness scaled by `factor` (see GrayImage.dimmed). */
 export function dimPlanes(planes: readonly Plane[], factor: number): Plane[] {
   return planes.map((plane) => ({ ...plane, image: plane.image.dimmed(factor) }));

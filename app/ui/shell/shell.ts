@@ -917,7 +917,11 @@ class Shell {
     // the Done/Follow-up menu is showing, the normal idle timeout resumes.
     // A foreground window that is playing video holds it off the same way.
     const foreground = this.foregroundWindow();
-    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive() ||
+    // The dictation bar holds it while the mic is open (hands-free dictation
+    // has no button presses); once the phrase is finalized the bar is back to
+    // an ordinary overlay and the normal idle timeout resumes.
+    if (this.activeVoiceLayer || this.activeDictationBar?.isCapturing() ||
+        this.activeKeyboardLayer || this.assistantSession?.isTurnActive() ||
         foreground?.isVoiceCapturing?.() || foreground?.keepsScreenOn?.()) {
       this.lastInputAtMs = nowMs;
       return false;

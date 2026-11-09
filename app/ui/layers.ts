@@ -1,6 +1,6 @@
 import { GrayImage } from "../graphics/image";
 import { screenHeight, screenWidth } from "../graphics/screen-size";
-import { dimPlanes, type Plane } from "../graphics/plane";
+import { dimPlanes, splitPlaneRows, type Plane } from "../graphics/plane";
 import { spanCurrent } from "../native/frame-timings";
 import { type ConfigSettingBoolean, type ConfigSettingString, type VoiceProvider } from "./dashboard-settings";
 import { directionalFallback, isDirectionalInput, type InputEvent } from "./gestures";
@@ -162,6 +162,11 @@ export class LayerStack {
   private baseSize: { width: number; height: number } | null;
   private readonly focusedFn: () => boolean;
   private lastBaseDim: number | false = 1;
+  /**
+   * The strip keys a takeover layer's split canvas uses (see paintLayer).
+   * Stable per layer so the glasses' resource cache keeps hitting them.
+   */
+  private readonly takeoverKeys = new WeakMap<Layer, number[]>();
 
   constructor(
     baseLayer: Layer,
@@ -336,7 +341,27 @@ export class LayerStack {
       return [ownPlane];
     }
     if (!belowRequested) {
-      return [ownPlane];
+      // A takeover layer (no paintBelow) owns the whole screen and paints an
+      // opaque canvas; the shell scene caps one plane at 64 KiB and wants a
+      // unique key per plane, so the canvas goes up as horizontal strips,
+      // each with its own stable key. The layer's dim rides on the first
+      // strip alone: the firmware applies one brightness LUT per plane, and
+      // strips of one canvas must dim what is below them once, not per strip.
+      // Only the shell's own stack (no fixed base size) encodes through the
+      // shell scene; an app window's stack submits its plane as a window
+      // surface frame, which has no such budget.
+      const strips = this.baseSize === null ? splitPlaneRows(ownPlane) : [ownPlane];
+      if (strips.length === 1) return strips;
+      let keys = this.takeoverKeys.get(layer);
+      if (!keys || keys.length !== strips.length) {
+        keys = strips.map(() => LayerStack.allocateShellKey());
+        this.takeoverKeys.set(layer, keys);
+      }
+      return strips.map((strip, part) => ({
+        ...strip,
+        shellKey: keys![part],
+        dimUnderneath: part === 0 ? ownPlane.dimUnderneath : 1,
+      }));
     }
     const dim = layer.dimUnderneath || 1;
     let belowIndex = layer.paintOverBase ? 0 : index - 1;
