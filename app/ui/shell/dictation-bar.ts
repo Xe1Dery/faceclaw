@@ -186,7 +186,13 @@ export class DictationBarLayer implements Layer {
   private autoSendDeadline: number | null = null;
 
   handleInput(event: InputEvent, _ctx: LayerContext): void {
-    if (this.done) return;
+    if (this.done) {
+      // A sent or closed bar that somehow stayed stacked (a layer pushed
+      // over it beat its own pop) is dead weight: it takes no input, so
+      // give ●● back its meaning and pop it (device issue 5, APK 823).
+      if (event.type === "double-click") this.dismiss();
+      return;
+    }
     switch (event.type) {
       case "click":
         this.requestSend();
@@ -337,8 +343,13 @@ export class DictationBarLayer implements Layer {
       this.capturing = false;
       this.stopCapture(() => {});
     }
-    this.onDone({ action: "sent", text });
+    // Pop first, then report (device issue 5, APK 823): the sent callback
+    // can push a layer of its own (the assistant raises its chat window over
+    // the bar), and the dismiss pops the top only — run after such a push,
+    // it would leave this dead bar stacked under the new layer, where it
+    // survives the window's close and swallows input until the timeout.
     this.dismiss();
+    this.onDone({ action: "sent", text });
   }
 
   private transcript(): string {
