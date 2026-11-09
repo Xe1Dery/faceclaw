@@ -438,6 +438,32 @@ courier block was updated to match (nano_assistant 49e40c7).
 AssistantLayer is deleted; VoiceInputLayer remains for Transcribe only.
 Suite 1229/0.
 
+`dist/Faceclaw-0.8.7-local-823.apk` (SHA-256
+`4d9ed964b2e7e8c8d777c47cc2db0f8700c9362a161b886f9db79f9442e12be1`): fixes
+why 822 showed nothing on the glasses. Root cause: the shell scene encoder
+caps one plane at 64 KiB (5 + ceil(w/2)*h <= 65536) and a takeover layer's
+full-screen opaque canvas is 153,605 bytes, so encodeShellScene threw inside
+paint for the chat window and every standalone frame; renderShell caught it
+as "shell render failed" and no frame was ever submitted — the screen froze
+on the previous frame (the bar's send "hanging until screen timeout" was
+this: send fired, the pushed chat window killed every later render). Layer-
+level unit tests passed because they never ran the real scene path. Fix
+(commit eac6456): LayerStack splits a takeover plane on the shell stack
+into horizontal strips of at most 160 rows (51,205 B at 640 wide), each
+with its own stable shell key (the firmware scene decoder requires unique
+keys per layer) and the layer's dim riding on the first strip alone (one
+firmware brightness LUT per plane). Window stacks are untouched (window
+surface frames have no such budget). tests/shell-takeover.test.cjs now runs
+the real GrayImage + encodeShellScene path so this bug class cannot pass
+tests again. Also: the screen timeout is now held off while the dictation
+bar holds the mic (hands-free dictation has no presses to reset the idle
+timer; the screen used to sleep mid-phrase). Suite 1232/0/3-skip.
+
+Device acceptance for 823: chat window opens and streams; bar send reaches
+the agent; dialog_open on LOCKED glasses shows the frame after wake (the
+lock surface still swallows taps until unlocked — firmware behavior);
+standalone reminder/alert frames show on opaque black over locked glasses.
+
 Closed issue (2026-11-09): after ~30-40s screen-off the FIRST wake's
 brightness fade was ragged; every immediate re-wake was smooth. Diagnosis
 confirmed by the wearer: turning "Suspend EvenHub when screen off" off
