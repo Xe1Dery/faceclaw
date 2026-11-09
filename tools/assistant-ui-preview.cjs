@@ -14,6 +14,10 @@
  * - 640x480 content (G2_LENS_WIDTH/HEIGHT), green monochrome panel;
  * - bottom switcher row is 36px (geometry.ts SWITCHER row), so the dictation
  *   bar sits ABOVE it: bar bottom edge at y=444, 12px margin;
+ *   the bar is full width from the start and grows DOWNWARD (its top edge
+ *   is fixed) as the phrase wraps — over the switcher row if it must;
+ * - gesture hints use the app's own glyph convention (gestures.ts):
+ *   ● tap, ●● double-tap, ▲▼ scroll;
  * - small text = terminus12 (lh 12), message text = terminus16 (lh 16);
  * - popup frames use the shipping ReminderLayer recipe: fill 1, border 90,
  *   title 200, body 235, hint 150.
@@ -66,7 +70,14 @@ const medium = getFont("terminus16");
 const SWITCHER_ROW = 36; // geometry.ts: bottom switcher row height
 const BAR_MARGIN = 12;   // gap between the bar and the switcher row
 const BAR_H = 44;        // one dictation line + 14px vertical padding
-const BAR_BOTTOM = G2_LENS_HEIGHT - SWITCHER_ROW - BAR_MARGIN;
+const BAR_TOP = G2_LENS_HEIGHT - SWITCHER_ROW - BAR_MARGIN - BAR_H;
+const BAR_W = 576;       // full width from the start
+const BAR_LINE = 16;     // terminus16 line height, per extra wrapped line
+
+// The app's own gesture glyphs (app/ui/gestures.ts).
+const G_TAP = "●";
+const G_DOUBLE = "●●";
+const G_SCROLL = "▲▼";
 
 /** Schematic background: top bar + a stand-in app window. */
 function background() {
@@ -104,42 +115,38 @@ function drawMic(img, x, y, value) {
 }
 
 /**
- * The dictation bar. opts: {text, wide, controls, countdown}
- * - narrow: fixed 280px; wide: grows to 576px as words stop fitting;
- * - controls: the post-dictation hint row (send / redo / close);
- * - countdown: remaining ms of the auto-send grace, a shrinking underline.
+ * The dictation bar. opts: {text, controls, countdown}
+ * - full width always; one line tall, growing DOWN as the phrase wraps
+ *   (top edge fixed); the tail of the phrase is what stays visible;
+ * - controls: the post-dictation glyph hint row (● send · ▲▼ redo · ●● close);
+ * - countdown: remaining ms of the auto-send grace, a shrinking underline
+ *   drawn at the bar's bottom edge (so it rides the growth).
  */
 function dictationBar(img, opts) {
-  const width = opts.wide ? 576 : 280;
-  const x = ((G2_LENS_WIDTH - width) / 2) | 0;
-  const y = BAR_BOTTOM - BAR_H;
-  img.fillRect(x, y, width, BAR_H, 1);
-  img.drawRect(x, y, width, BAR_H, 120);
+  const x = ((G2_LENS_WIDTH - BAR_W) / 2) | 0;
+  const y = BAR_TOP;
+  // the phrase wraps at the full inner width; the bar grows down to fit it
+  const lines = opts.text ? wrapText(medium, opts.text, BAR_W - 36 - 14) : [];
+  const shown = lines.slice(0, 4); // hard cap: 4 lines, then it scrolls
+  const height = BAR_H + Math.max(0, shown.length - 1) * BAR_LINE + (opts.controls ? small.lineHeight + 4 : 0);
+  img.fillRect(x, y, BAR_W, height, 1);
+  img.drawRect(x, y, BAR_W, height, 120);
   drawMic(img, x + 14, y + 10, opts.text ? 150 : 235);
-  if (opts.text) {
-    const tx = x + 36;
-    const maxW = width - 36 - 14;
-    if (opts.wide) {
-      // wrapped, the last two lines of the phrase (its tail) shown
-      const lines = wrapText(medium, opts.text, maxW);
-      const shown = lines.slice(-2);
-      shown.forEach((line, i) => medium.drawText(img, tx, y + 6 + i * medium.lineHeight, line, 235));
-    } else {
-      medium.drawText(img, tx, y + 14, opts.text, 235);
-    }
+  if (shown.length) {
+    shown.forEach((line, i) => medium.drawText(img, x + 36, y + 14 + i * BAR_LINE, line, 235));
   } else {
     small.drawText(img, x + 36, y + 16, "Слушаю...", 150);
   }
   if (opts.controls) {
-    const cy = y + BAR_H - small.lineHeight - 4;
-    small.drawText(img, x + 36, cy, "Тап - отправить · Скролл - заново · Двойной - закрыть", 150);
+    const cy = y + height - small.lineHeight - 4;
+    small.drawText(img, x + 36, cy, `${G_TAP} отправить   ${G_SCROLL} заново   ${G_DOUBLE} закрыть`, 150);
   }
   if (opts.countdown !== undefined) {
-    // auto-send grace: a shrinking underline, full width = 1.5s
-    const w = Math.max(0, Math.min(1, opts.countdown / 1500)) * (width - 8);
-    img.fillRect(x + 4, y + BAR_H - 3, w | 0, 2, 200);
+    // auto-send grace: a shrinking underline at the bottom edge, full = 1.5s
+    const w = Math.max(0, Math.min(1, opts.countdown / 1500)) * (BAR_W - 8);
+    img.fillRect(x + 4, y + height - 3, w | 0, 2, 200);
   }
-  return { x, y, width };
+  return { x, y, width: BAR_W, height };
 }
 
 /** Chat session window: full-screen takeover, header + message list. */
@@ -164,14 +171,15 @@ function chatWindow(img, opts) {
     const lines = wrapText(medium, text, width - 28);
     const value = user ? 170 : 235;
     for (const line of lines) {
-      if (y + medium.lineHeight > top + height - (opts.typing ? 24 : 20)) break;
+      if (y + medium.lineHeight > top + height - (opts.actions || opts.hint || opts.newBelow ? 24 : 20)) break;
       medium.drawText(img, x + 14, y, line, value);
       y += medium.lineHeight;
     }
     y += 6;
   }
-  if (opts.typing) {
-    small.drawText(img, x + 14, top + height - 18, "Nano печатает...", 150);
+  // the agent's action trail (Thinking, Exec...) rides under the newest message
+  if (opts.actions) {
+    small.drawText(img, x + 26, Math.min(y, top + height - small.lineHeight - 2), opts.actions, 130);
   }
   if (opts.newBelow) {
     // answer outgrew the window: an arrow promises more below
@@ -241,27 +249,26 @@ function shot(name, title, note, build) {
   shots.push({ name, title, note, png: writePng(name, img) });
 }
 
-// 1. Dictation over the live interface, narrow, listening.
+// 1. Dictation over the live interface, one line, listening.
 shot(
-  "01-bar-narrow",
-  "Диктовка поверх интерфейса - узкая полоса",
-  "Появилась снизу над рядом переключателя. Пока слова помещаются, ширина не растёт. Подсказок нет, место под них снизу полосы зарезервировано.",
+  "01-bar-one-line",
+  "Диктовка поверх интерфейса - одна строка",
+  "Полоса сразу во всю ширину, прижата к низу. Пока фраза влезает в строку, высота не растёт. Подсказок нет - место под них внизу полосы зарезервировано.",
   (img) => {
     background().composeInto(img, 0, 0);
-    dictationBar(img, { text: "Поставь" });
+    dictationBar(img, { text: "Поставь напоминание" });
   },
 );
 
-// 2. Expanded bar with a long phrase.
+// 2. Long phrase: the bar grew downward.
 shot(
-  "02-bar-wide",
-  "Полоса расширилась - фраза не влезает",
-  "Ширина выросла до максимума, текст переносится, видны последние две строки (хвост фразы).",
+  "02-bar-grown",
+  "Фраза не влезает - полоса выросла вниз",
+  "Ширина та же, окно растёт вниз на каждую перенесённую строку (верх закреплён), при необходимости закрывая ряд переключателя.",
   (img) => {
     background().composeInto(img, 0, 0);
     dictationBar(img, {
-      wide: true,
-      text: "Напомни мне завтра в семь вечера позвонить маме и купить билеты на Ригу",
+      text: "Напомни мне завтра в семь вечера позвонить маме и купить билеты на Ригу, и ещё закрыть отчёт",
     });
   },
 );
@@ -270,11 +277,10 @@ shot(
 shot(
   "03-bar-controls",
   "Диктовка окончена - появились подсказки",
-  "После молчания строка фиксируется, внизу полосы показываются подсказки жестов. Отправки ещё нет.",
+  "Подсказки символами, как в остальном интерфейсе: ● тап - отправить, ▲▼ скролл - заново, ●● двойной тап - закрыть.",
   (img) => {
     background().composeInto(img, 0, 0);
     dictationBar(img, {
-      wide: true,
       text: "Напомни мне завтра в семь вечера позвонить маме",
       controls: true,
     });
@@ -285,11 +291,10 @@ shot(
 shot(
   "04-bar-countdown",
   "Автоотправка - полоса обратного отсчёта",
-  "С включённой автоотправкой: под полосой тает линия отсчёта (1.5 с). Тап отправляет сразу, скролл - переговорить.",
+  "Линия отсчёта (1.5 с) тает по нижнему краю полосы. ● отправляет сразу, ▲▼ - переговорить.",
   (img) => {
     background().composeInto(img, 0, 0);
     dictationBar(img, {
-      wide: true,
       text: "Напомни мне завтра в семь вечера позвонить маме",
       controls: true,
       countdown: 900,
@@ -301,7 +306,7 @@ shot(
 shot(
   "05-chat-answer",
   "Окно диалога - ответ агента",
-  "Интерфейс скрыт, только диалог. Ответ пришёл - внизу подсказка: тап продолжить, двойной тап выйти.",
+  "Интерфейс скрыт, только диалог. Под репликой - след действий агента (Thinking, Exec...). Ответ пришёл - внизу подсказка: ● продолжить, ●● выйти.",
   (img) => {
     chatWindow(img, {
       link: "connected",
@@ -309,7 +314,8 @@ shot(
         { role: "user", text: "Напомни мне завтра в семь вечера позвонить маме" },
         { role: "agent", text: "Готово. Завтра в 19:00 напомню позвонить маме. Ставлю в список «Личное»." },
       ],
-      hint: "Тап - продолжить · Двойной - выйти",
+      actions: "Thinking · Exec: ticktick.create_task",
+      hint: `${G_TAP} продолжить   ${G_DOUBLE} выйти`,
     });
   },
 );
@@ -326,7 +332,6 @@ shot(
         { role: "user", text: "Что у меня завтра по планам?" },
         { role: "agent", text: "Завтра: в 10:00 созвон с командой, в 13:00 обед с Сергеем, к 18:00 закрыть отчёт по расходам. Между 14:00 и 17:00 окон нет - хорошее время для звонка маме." },
       ],
-      typing: true,
       newBelow: true,
     });
     dictationBar(img, { text: "Перенеси созвон" });
@@ -347,7 +352,7 @@ shot(
         { role: "user", text: "Перенеси созвон на 11" },
         { role: "agent", text: "Перенёс. Осталось: созвон 11:00, обед 13:00." },
       ],
-      hint: "Тап - продолжить · Двойной - выйти",
+      hint: `${G_TAP} продолжить   ${G_DOUBLE} выйти`,
     });
   },
 );
@@ -361,7 +366,7 @@ shot(
     popup(img, {
       title: "Напоминание",
       text: "Позвонить маме - сегодня в 19:00",
-      hint: "Тап - ответить · Двойной - пропустить",
+      hint: `${G_TAP} ответить   ${G_DOUBLE} пропустить`,
     });
   },
 );
@@ -377,7 +382,7 @@ shot(
       overInterface: true,
       title: "Напоминание",
       text: "Позвонить маме - сегодня в 19:00",
-      hint: "Тап - ответить · Двойной - пропустить",
+      hint: `${G_TAP} ответить   ${G_DOUBLE} пропустить`,
     });
   },
 );
@@ -391,7 +396,7 @@ shot(
     popup(img, {
       title: "Nano",
       text: "Напоминание «Позвонить маме» просрочено на 2 часа. Перенести на 21:00?",
-      hint: "Тап - ответить голосом · Двойной - пропустить",
+      hint: `${G_TAP} ответить голосом   ${G_DOUBLE} пропустить`,
     });
   },
 );
@@ -403,6 +408,24 @@ shot(
   "Интерфейс не поднимается: с переходом яркости появляется только полоса записи (тот же низ экрана). После отправки - окно диалога (05).",
   (img) => {
     dictationBar(img, { text: "" });
+  },
+);
+
+// 12. No link: the bar refuses to open.
+shot(
+  "12-bar-no-link",
+  "Нет связи с сервером - ввод не начинается",
+  "Полоса не открывается без связи: вместо неё короткая рамка-причина (тот же низ экрана). Квадратик связи на главной остаётся как был.",
+  (img) => {
+    background().composeInto(img, 0, 0);
+    const x = ((G2_LENS_WIDTH - BAR_W) / 2) | 0;
+    const y = BAR_TOP;
+    img.fillRect(x, y, BAR_W, BAR_H, 1);
+    img.drawRect(x, y, BAR_W, BAR_H, 90);
+    drawMic(img, x + 14, y + 10, 60);
+    medium.drawText(img, x + 36, y + 14, "Нет связи с Nano", 255);
+    const sq = 12;
+    img.fillRect(x + BAR_W - sq - 14, y + 16, sq, sq, 255);
   },
 );
 
