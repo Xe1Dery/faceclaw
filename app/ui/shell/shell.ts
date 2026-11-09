@@ -21,6 +21,7 @@ import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from 
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
 import { ReminderLayer, type ReminderOutcome, type ReminderRequest } from "./reminder-layer";
+import { ProactiveDialogLayer, type ProactiveDialogOutcome, type ProactiveDialogRequest } from "./proactive-dialog-layer";
 import { KeyboardInputLayer, type KeyboardInputSession, type KeyboardInputVisibility } from "./keyboard-input";
 import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
@@ -518,6 +519,9 @@ class Shell {
   // Interactive reminders by id, while their popup is open and awaiting an
   // answer (see showReminder); a re-show of the same id reuses the open one.
   private readonly activeReminders = new Map<string, { layer: ReminderLayer; promise: Promise<ReminderOutcome> }>();
+  // The one open proactive dialog turn (see showProactiveDialog); a second
+  // concurrent call is refused rather than stacking a second microphone.
+  private activeProactiveDialog: { layer: ProactiveDialogLayer; promise: Promise<ProactiveDialogOutcome> } | null = null;
   private escapeMenuTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly actions: LayerActions = { ...noopActions };
   private config: ShellConfig = {
@@ -1948,6 +1952,47 @@ class Shell {
     if (!open) return false;
     open.layer.cancel();
     return true;
+  }
+
+  /**
+   * Open a proactive dialog turn (the assistant's glasses.dialog_open tool):
+   * show the assistant's line and listen hands-free for one spoken reply,
+   * which the tool returns to the calling agent as its result. Refused
+   * (returns null) while voice input is off, the mic is held by another
+   * dialog, or a dialog turn is already open — the caller falls back to a
+   * plain alert. The assistant overlay is deliberately not opened: the agent
+   * is the caller itself, and a second concurrent turn in the same session
+   * would only collide with it.
+   */
+  showProactiveDialog(request: ProactiveDialogRequest): Promise<ProactiveDialogOutcome> | null {
+    if (this.config.voiceInputEnabled === false) return null;
+    if (this.activeProactiveDialog) return null;
+    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()) return null;
+    if (!this.screenOn) this.wake("sidebar");
+    let settlePromise: (outcome: ProactiveDialogOutcome) => void = () => {};
+    const promise = new Promise<ProactiveDialogOutcome>((resolve) => {
+      settlePromise = resolve;
+    });
+    voiceActivity.setActive(true, "proactive-dialog");
+    const layer = new ProactiveDialogLayer(
+      request,
+      this.config.actions,
+      () => Boolean(this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()),
+      () => {
+        this.stack.popIfTop((top) => top === layer);
+        this.config.requestShellRender();
+      },
+      (outcome) => {
+        if (this.activeProactiveDialog?.layer === layer) this.activeProactiveDialog = null;
+        voiceActivity.setActive(false, "proactive-dialog");
+        this.noteUserActivity();
+        settlePromise(outcome);
+      },
+    );
+    this.activeProactiveDialog = { layer, promise };
+    this.stack.push(layer);
+    this.config.requestShellRender();
+    return promise;
   }
 
   private startEscapeMenuTimer(): void {

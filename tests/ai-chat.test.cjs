@@ -279,7 +279,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
       startCapture() {}
       onRemoved() { this.options.onClosed(); }
     } }, './keyboard-input': {}, './voice-activity': { voiceActivity: { setActive() {} } }, './assistant': {},
-    './reminder-layer': {},
+    './reminder-layer': {}, './proactive-dialog-layer': {},
     '../../assistant/conversations': {}, '../../assistant/models': {}, '../../native/settings-store': {},
     '../notifications': {}, '../dashboard-settings': settings, './ambient-cards': {},
     './chrome-layer': { ShellChromeLayer: class {} }, './modal-layer': {}, './tool-debug-layer': {},

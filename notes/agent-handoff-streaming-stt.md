@@ -400,6 +400,19 @@ confirmation frame, which read as a second notification for the same task.
 Snooze/postpone/other keep the frame (it carries what was understood).
 Reminder-layer suite 17/17, full suite green.
 
+`dist/Faceclaw-0.8.7-local-820.apk` (SHA-256
+`f4e77bc4dc5d8902c6bdf1cd336fcb5e58083c8905078d74271ad03ee3065a4e`) adds the
+proactive voice-dialog turn: `glasses.dialog_open {text, ttl_ms}` (app/
+assistant/dialog-tools.ts + app/ui/shell/proactive-dialog-layer.ts, shell
+method showProactiveDialog). The agent shows one line, the mic opens
+hands-free immediately, ONE utterance comes back as the tool result
+{action: answered|dismissed|no-answer, text?} in the same agent turn — the
+assistant overlay is deliberately not opened (the caller IS the session).
+Refused (tool error naming the show_alert fallback) when voice input is off,
+the mic is held, or a turn is already open. Design: popups stay the delivery
+primitive (ledger/retry), dialog_open is the discussion primitive. Suite
+1195/0 (two vm harnesses got the new import stubbed).
+
 ## Unfinished work — do this next
 
 0. **Interactive reminders (TickTick <-> OpenClaw, added 2026-11-08).** The phone side

@@ -10,6 +10,7 @@ import { openEvenHubStoreForPackage } from '../apps/evenhub'
 import { launchInstalledPackage, closeRunningPackage, onPhoneShownChanged, phoneUiButton, showOnPhone, type PhoneUiButton } from '../apps/evenhub/manager'
 import { registerSystemTools } from '../assistant/system-tools'
 import { registerReminderTools } from '../assistant/reminder-tools'
+import { registerDialogTools } from '../assistant/dialog-tools'
 import { registerWindowTools } from '../assistant/window-tools'
 import { registerNavigateTools } from '../assistant/navigate-tools'
 import { registerRoamTools } from '../assistant/roam-tools'
@@ -275,6 +276,7 @@ export class IosPreviewController {
     onPhoneShownChanged(() => this.syncEvenHubPhoneUi())
     registerSystemTools()
     registerReminderTools()
+    registerDialogTools()
     registerWindowTools({ apps: () => ALL_APPS.filter(app => app.isSupported?.() !== false && !iosAppUnavailableReason(app.appId)),
       launchApp: id => this.launchApp(id), requestShellRender: () => this.requestShellRender() })
     registerNavigateTools(id => this.launchApp(id))
