@@ -452,12 +452,17 @@ class DashboardController {
       },
       onWindowsChanged: () => {
         this.persistOpenApps();
+        // A window opened or foregrounded while a standalone frame owns the
+        // lenses (its worker's setForeground shows its surface): put it back
+        // behind the frame. Idempotent; a no-op when nothing is cooling.
+        if (this.standaloneCooling) this.applyStandaloneSurfaces(true);
         // The foreground title is mirrored on both remote-control faces.
         this.emit();
       },
       openNotificationsWindow: () =>
         this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow),
       onSwitcherBarHeightChanged: () => this.applySwitcherBarHeight(),
+      onStandaloneChanged: (active) => this.applyStandaloneSurfaces(active),
       onScreenStateChanged: (on) => {
         // Any wake of the regular UI replaces a showing Glanceboard.
         if (on) this.glance.dismiss();
@@ -861,7 +866,15 @@ class DashboardController {
   private async syncLockSurface(): Promise<void> {
     const communicator = this.communicator;
     if (!communicator || !this.lockSurfaceConfigured) return;
-    await communicator.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, this.glassesLocked);
+    // A standalone frame (see applyStandaloneSurfaces) needs the lock
+    // surface down: any visible surface above zOrder 1 makes the compositor
+    // drop the shell scene entirely, so the frame could never show on
+    // locked glasses. applyStandaloneSurfaces owns the surface while its
+    // cooling is on and restores it when the frame closes.
+    await communicator.setSurfaceVisible(
+      LOCK_SCREEN_SURFACE_ID,
+      this.glassesLocked && !this.standaloneCooling,
+    );
     this.updateCompositePreview();
   }
 
@@ -2804,7 +2817,17 @@ class DashboardController {
     const rect = appViewportRect(heightMode, shell.getWindows().find((window) => window.surfaceId === surfaceId)?.appId);
     this.windowSurfaceRects.set(surfaceId, JSON.stringify(rect));
     await target.configureSurface(surfaceId, { ...rect, zOrder: 0, transparency: "opaque" });
-    await target.setSurfaceVisible(surfaceId, typeof visible === "function" ? visible() : visible);
+    await target.setSurfaceVisible(surfaceId, this.withoutStandaloneVeto(typeof visible === "function" ? visible() : visible));
+  }
+
+  /**
+   * A window surface's wanted visibility with the standalone frame's veto
+   * applied (see applyStandaloneSurfaces): while a standalone frame owns
+   * the lenses no window surface may enter the composite — whatever asked
+   * for it (a foreground change, a surface reconfigure, a relayout).
+   */
+  private withoutStandaloneVeto(visible: boolean): boolean {
+    return this.standaloneCooling ? false : visible;
   }
 
   /** Each window surface's rect as last configured (applySwitcherBarHeight skips those that stay). */
@@ -2859,8 +2882,38 @@ class DashboardController {
   private setWindowSurfaceVisible(surfaceId: string, visible: boolean): void {
     const display = this.display;
     if (!display) return;
-    void display.setSurfaceVisible(surfaceId, visible).catch((error) => {
+    void display.setSurfaceVisible(surfaceId, this.withoutStandaloneVeto(visible)).catch((error) => {
       this.appendLog(`surface visibility change failed: ${this.formatError(error)}`);
+    });
+  }
+
+  /**
+   * Whether a standalone shell frame (dictation bar, alert, reminder,
+   * proactive dialog) currently owns the lenses. Set by the shell through
+   * onStandaloneChanged; while on, every window surface and the lock
+   * surface are held out of the composite.
+   */
+  private standaloneCooling = false;
+
+  /**
+   * Show a standalone frame alone (spec 2/4). The panel is additive: black
+   * pixels cannot cover anything, so the opaque canvas a standalone layer
+   * paints hides nothing — the interface disappears only when the window
+   * surfaces are kept out of the composite itself. Hidden surfaces retain
+   * their pixels, so restoring them brings the interface back untouched.
+   * Fire-and-forget like setWindowSurfaceVisible: the next shell render
+   * composites whatever state the queue has reached.
+   */
+  private applyStandaloneSurfaces(active: boolean): void {
+    this.standaloneCooling = active;
+    for (const window of shell.getWindows()) {
+      // Hiding covers every window; restoring shows only the foreground
+      // one — background windows are hidden by the switcher's own rule.
+      const foreground = shell.foregroundWindow()?.windowId === window.windowId;
+      this.setWindowSurfaceVisible(window.surfaceId, !active && foreground);
+    }
+    void this.syncLockSurface().catch((error) => {
+      this.appendLog(`lock screen update failed: ${this.formatError(error)}`);
     });
   }
 

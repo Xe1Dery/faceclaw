@@ -99,7 +99,8 @@ export class DictationBarLayer implements Layer {
   private readonly dismiss: () => void;
   private readonly onDone: (outcome: DictationOutcome) => void;
   private readonly autoSend: boolean;
-  private readonly standalone: boolean;
+  /** Public: the stack reads it to hide the window surfaces under the bar (spec 2). */
+  readonly standalone: boolean;
 
   constructor(options: DictationBarOptions) {
     this.actions = options.actions;
@@ -444,8 +445,9 @@ export class DictationRefusalLayer implements Layer {
     private readonly interfaceBottom: () => number,
     private readonly dismiss: () => void,
     private readonly label = "Нет связи с OpenClaw",
-    /** Locked glasses: the frame arrives alone, on the screen's bottom edge. */
-    private readonly standalone = false,
+    /** Locked glasses: the frame arrives alone, on the screen's bottom edge.
+     * Public: the stack reads it to hide the window surfaces underneath. */
+    readonly standalone = false,
   ) {
     this.timer = setTimeout(() => this.dismiss(), NO_LINK_MS);
   }

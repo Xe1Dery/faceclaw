@@ -47,8 +47,9 @@ export class ProactiveDialogLayer implements Layer {
   /** The answer was delegated to the dictation bar, not this layer's own mic. */
   private delegated = false;
   /** Locked-glasses presentation (spec 4): the frame arrives alone, the
-   * interface is not raised behind it. */
-  private readonly standalone: boolean;
+   * interface is not raised behind it. Public: the stack reads it to hide
+   * the window surfaces underneath. */
+  readonly standalone: boolean;
   /** Slide-in progress 0..1 for the unlocked presentation; 1 = at rest. */
   private slide = 1;
   private cancelSlide: (() => void) | null = null;

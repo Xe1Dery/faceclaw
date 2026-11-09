@@ -229,6 +229,15 @@ export type ShellConfig = {
   onKeyboardInputChanged?: (session: KeyboardInputSession | null) => void;
   /** Screen on/off changed: the controller blanks/unblanks the compositor. */
   onScreenStateChanged: (on: boolean) => void;
+  /**
+   * A standalone overlay (dictation bar, alert, reminder, proactive dialog)
+   * became the top layer, or the last one came off. The panel is additive:
+   * black pixels cannot cover anything, so the only way to show an overlay
+   * alone over a dark screen is to keep the window surfaces (and the lock
+   * surface) out of the composite while it is up. Hosts hide them on true
+   * and restore them on false (see DashboardController.applyStandaloneSurfaces).
+   */
+  onStandaloneChanged?: (active: boolean) => void;
   /** Window registered/removed or foreground changed (persists the open-app list). */
   onWindowsChanged?: () => void;
   /**
@@ -387,8 +396,9 @@ class ShellAlertLayer implements Layer {
   constructor(
     private readonly text: string,
     private readonly onDismiss: () => void,
-    /** Locked glasses: the alert arrives alone over a dark screen (spec 4). */
-    private readonly standalone = false,
+    /** Locked glasses: the alert arrives alone over a dark screen (spec 4).
+     * Public: the stack reads it to hide the window surfaces underneath. */
+    readonly standalone = false,
   ) {
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -567,6 +577,7 @@ class Shell {
       ...config,
       requestShellRender: () => {
         this.syncInputFocus();
+        this.syncStandaloneSurfaces();
         config.requestShellRender();
       },
     };
@@ -574,6 +585,62 @@ class Shell {
     this.subscribeToChromeSettings();
     this.subscribeToAmbientCards();
   }
+
+  /**
+   * Whether a standalone overlay (the dictation bar, an alert, a reminder,
+   * a proactive dialog) currently sits on top of the shell stack: it paints
+   * its own full-screen canvas and must be the only thing on the lenses.
+   */
+  standaloneActive(): boolean {
+    return this.screenOn && this.stack.standaloneTop();
+  }
+
+  /** Tell the host about a standalone-state change; called from every shell
+   * render request, the one point all stack / screen / window changes pass
+   * through. Cheap: only fires when the answer actually flipped. */
+  private syncStandaloneSurfaces(): void {
+    const active = (this.standaloneActive() || this.standaloneOpening) && this.screenOn;
+    // Once the stack itself shows the standalone layer, the open-time hold
+    // has done its job; drop it so a later pop flips the state off. The hold
+    // also dies with the screen: a push that never landed (the wake fired but
+    // the layer was never popped) must not re-cool the next plain wake.
+    if (this.standaloneOpening && (this.standaloneActive() || !this.screenOn)) this.standaloneOpening = false;
+    if (active === this.lastStandaloneActive) return;
+    this.lastStandaloneActive = active;
+    this.config.onStandaloneChanged?.(active);
+  }
+
+  private lastStandaloneActive = false;
+
+  /**
+   * Wake for a standalone frame (spec 2/4). The host is told BEFORE the
+   * wake: the wake's unblank step composites and submits the retained
+   * window surfaces as the first lit frame, so they have to be out of the
+   * compositor's queue by then — otherwise the interface flashes up for
+   * that one frame, the exact complaint this path exists to fix.
+   */
+  private wakeForStandalone(): void {
+    if (!this.lastStandaloneActive) {
+      this.lastStandaloneActive = true;
+      this.config.onStandaloneChanged?.(true);
+    }
+    // The wake (and its unblank frame) runs before the caller pushes the
+    // layer; hold the state through that gap so the diff below cannot read
+    // "no standalone layer yet" and hand the interface back for one frame.
+    this.standaloneOpening = true;
+    this.wake("sidebar");
+  }
+
+  /** Release the open-time hold once the standalone layer is pushed (or the
+   * open was refused); the next render request re-diffs from the stack. */
+  private releaseStandaloneOpening(): void {
+    if (!this.standaloneOpening) return;
+    this.standaloneOpening = false;
+    this.syncStandaloneSurfaces();
+  }
+
+  /** True between a standalone open's wake and its layer push (see above). */
+  private standaloneOpening = false;
 
   // Ambient (encounter) cards live in the chrome paint; a posted or expired
   // card repaints the shell surface so it appears and disappears on time.
@@ -883,6 +950,10 @@ class Shell {
     }
     this.syncInputFocus();
     this.config.onScreenStateChanged(false);
+    // A standalone overlay was cleared with the stack: the host has to
+    // bring the window surfaces (and the lock surface) back, or the
+    // compositor would keep them hidden through the next wake.
+    this.syncStandaloneSurfaces();
     if (minimizedChat) this.pendingChatRestore = true;
   }
 
@@ -1646,7 +1717,7 @@ class Shell {
     // Locked glasses: the bar arrives standalone over a dark screen, the
     // interface is not raised behind it (spec 2, mockup 11).
     const standalone = !this.screenOn;
-    if (standalone) this.wake("sidebar");
+    if (standalone) this.wakeForStandalone();
     const autoSend = options.autoSend ?? assistantSkipConfirmationSetting.get();
     const layer = new DictationBarLayer({
       actions: this.config.actions,
@@ -2037,7 +2108,7 @@ class Shell {
    * refuse with this, in the bar's place. */
   private showAssistantNoLink(): void {
     const standalone = !this.screenOn;
-    if (standalone) this.wake("sidebar");
+    if (standalone) this.wakeForStandalone();
     const refusal = new DictationRefusalLayer(
       this.config.actions,
       interfaceBottom,
@@ -2057,7 +2128,7 @@ class Shell {
     // Locked glasses: the alert arrives alone, without raising the interface
     // behind it (spec 4). Decided before the wake.
     const standalone = !this.screenOn;
-    if (standalone) this.wake("sidebar");
+    if (standalone) this.wakeForStandalone();
     for (const listener of Array.from(this.alertListeners)) {
       try {
         listener(text);
@@ -2091,7 +2162,7 @@ class Shell {
     // Locked glasses: the frame arrives standalone, without raising the
     // interface behind it (spec 4). Decided before the wake.
     const standalone = !this.screenOn;
-    if (standalone) this.wake("sidebar");
+    if (standalone) this.wakeForStandalone();
     let settlePromise: (outcome: ReminderOutcome) => void = () => {};
     const promise = new Promise<ReminderOutcome>((resolve) => {
       settlePromise = resolve;
@@ -2155,7 +2226,7 @@ class Shell {
     if (this.activeVoiceLayer || this.activeDictationBar || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()) return null;
     // Same locked/unlocked split as the reminder frame (spec 4).
     const standalone = !this.screenOn;
-    if (standalone) this.wake("sidebar");
+    if (standalone) this.wakeForStandalone();
     let settlePromise: (outcome: ProactiveDialogOutcome) => void = () => {};
     const promise = new Promise<ProactiveDialogOutcome>((resolve) => {
       settlePromise = resolve;

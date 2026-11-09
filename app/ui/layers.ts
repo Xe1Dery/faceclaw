@@ -104,6 +104,12 @@ export interface Layer {
   paintParts?(): Plane[];
   readonly paintOverBase?: boolean;
   /**
+   * True while this stacked layer stands alone over a dark screen: the
+   * shell hides the window surfaces beneath it (see Shell.standaloneActive),
+   * because an additive microLED panel cannot cover anything with black.
+   */
+  readonly standalone?: boolean;
+  /**
    * True when this layer stands in for `below`, a stacked layer directly
    * beneath it (or beneath another layer it stands in for): when this layer
    * calls paintBelow, the stack skips `below` and paints what is under it
@@ -203,6 +209,11 @@ export class LayerStack {
   /** Whether the top layer matches (without popping it). */
   topMatches(predicate: (layer: Layer) => boolean): boolean {
     return this.layers.length > 1 && predicate(this.layers[this.layers.length - 1]!);
+  }
+
+  /** Whether the top stacked layer (if any) is a standalone overlay. */
+  standaloneTop(): boolean {
+    return this.layers.length > 1 && Boolean(this.layers[this.layers.length - 1]!.standalone);
   }
 
   /** Pop the top layer only if it matches; returns whether a layer was popped. */

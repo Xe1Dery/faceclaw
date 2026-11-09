@@ -64,8 +64,9 @@ export class ReminderLayer implements Layer {
   /** The outcome shown in the confirmation phase (kept for the test hooks). */
   private shownAction = "";
   /** Locked-glasses presentation (spec 4): the frame arrives alone, the
-   * interface is not raised behind it. */
-  private readonly standalone: boolean;
+   * interface is not raised behind it. Public: the stack reads it to hide
+   * the window surfaces underneath. */
+  readonly standalone: boolean;
   /** Slide-in progress 0..1 for the unlocked presentation; 1 = at rest. */
   private slide = 1;
   private cancelSlide: (() => void) | null = null;

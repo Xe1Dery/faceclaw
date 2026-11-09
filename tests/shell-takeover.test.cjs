@@ -97,3 +97,19 @@ test('a window stack takeover plane is not split (window frames have no 64 KiB b
   assert.equal(parts.length, 1);
   assert.equal(parts[0].image.height, 260);
 });
+
+// Standalone cooling (APK 824, device issue 2) hinges on this one answer:
+// is the top stacked layer a standalone overlay? The shell asks it on every
+// render to decide whether to hide the window surfaces underneath.
+test('standaloneTop answers only for a standalone layer on the stack top', () => {
+  const stack = shellStack();
+  assert.equal(stack.standaloneTop(), false, 'empty stack');
+  stack.push({ paint: () => {}, handleInput: () => {}, standalone: true });
+  assert.equal(stack.standaloneTop(), true, 'standalone on top');
+  stack.push({ paint: () => {}, handleInput: () => {} });
+  assert.equal(stack.standaloneTop(), false, 'plain layer covers it');
+  stack.pop();
+  assert.equal(stack.standaloneTop(), true, 'covered again once the plain layer pops');
+  stack.pop();
+  assert.equal(stack.standaloneTop(), false, 'back to empty');
+});
