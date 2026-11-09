@@ -62,15 +62,17 @@ function openDialog(env, overrides = {}) {
 const click = { type: 'click', timestampMs: 0 };
 const doubleClick = { type: 'double-click', timestampMs: 0 };
 
-test('the dialog opens hands-free: the mic starts immediately', () => {
+test('the dialog opens silent: no microphone until a tap', () => {
   const env = layerEnv();
   openDialog(env);
-  assert.deepEqual(env.actions.starts, [true]); // endpointing capture from the start
+  assert.deepEqual(env.actions.starts, []);
 });
 
-test('a final transcript settles as answered and closes the layer', () => {
+test('a tap opens the mic and a final transcript settles as answered', () => {
   const env = layerEnv();
-  const { outcomes, dismisses } = openDialog(env);
+  const { layer, outcomes, dismisses } = openDialog(env);
+  layer.handleInput(click);
+  assert.deepEqual(env.actions.starts, [true]); // endpointing capture on the tap
   env.emitTranscript('первую сделал, вторую на вечер', true);
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'answered');
@@ -80,7 +82,8 @@ test('a final transcript settles as answered and closes the layer', () => {
 
 test('endpointing ends the capture and the trailing final still settles', () => {
   const env = layerEnv();
-  const { outcomes } = openDialog(env);
+  const { layer, outcomes } = openDialog(env);
+  layer.handleInput(click);
   env.emitTranscript('сделаю вечером', false); // partial only
   env.fireSpeechEnd(); // the speaker stopped
   assert.equal(env.actions.stops, 1);
@@ -93,8 +96,9 @@ test('endpointing ends the capture and the trailing final still settles', () => 
 test('a tap ends the capture; the trailing final settles the answer', () => {
   const env = layerEnv();
   const { layer, outcomes } = openDialog(env);
+  layer.handleInput(click); // open the mic
   env.emitTranscript('отмени первую', false);
-  layer.handleInput(click); // cut the silence wait short
+  layer.handleInput(click); // a second tap cuts the silence wait short
   env.emitTranscript('отмени первую', true);
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'answered');
@@ -104,7 +108,7 @@ test('a tap ends the capture; the trailing final settles the answer', () => {
 test('silence until the ttl is a no-answer, not an answer', () => {
   const env = layerEnv();
   const { layer, outcomes, dismisses } = openDialog(env, { ttlMs: 30_000 });
-  env.advance(31_000);
+  env.advance(31_000); // never tapped
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'no-answer');
   assert.equal(dismisses.count, 1);
@@ -112,10 +116,11 @@ test('silence until the ttl is a no-answer, not an answer', () => {
   assert.equal(outcomes.length, 1);
 });
 
-test('a tap-stop with nothing heard settles no-answer after the finalize window', () => {
+test('a tapped capture into silence settles no-answer on the hard cap', () => {
   const env = layerEnv();
   const { layer, outcomes } = openDialog(env);
-  layer.handleInput(click); // stop with silence
+  layer.handleInput(click); // open the mic, then say nothing
+  env.advance(31_000); // the capture hard cap ends it
   env.advance(2500); // the finalize window elapses
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'no-answer');
@@ -124,7 +129,7 @@ test('a tap-stop with nothing heard settles no-answer after the finalize window'
 test('a double-tap dismisses without an answer', () => {
   const env = layerEnv();
   const { layer, outcomes, dismisses } = openDialog(env);
-  layer.handleInput(doubleClick);
+  layer.handleInput(doubleClick); // from the waiting phase: skip
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'dismissed');
   assert.equal(dismisses.count, 1);
@@ -140,25 +145,27 @@ test('removal by the shell settles as no-answer', () => {
 
 test('the hard capture cap ends a runaway capture', () => {
   const env = layerEnv();
-  const { outcomes } = openDialog(env);
+  const { layer, outcomes } = openDialog(env);
+  layer.handleInput(click); // the tap opens the mic and arms the hard cap
   env.advance(31_000); // the hard cap fires; no transcript ever arrives
   env.advance(2_500); // the finalize window elapses
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'no-answer');
 });
 
-test('a busy mic refuses the capture but the dialog still times out', () => {
+test('a busy mic refuses the tap and the dialog still times out', () => {
   const env = layerEnv();
   const outcomes = [];
-  new env.mod.ProactiveDialogLayer(
+  const layer = new env.mod.ProactiveDialogLayer(
     { text: 'x', ttlMs: 30_000 },
     env.actions,
-    () => true, // the mic is busy at open
+    () => true, // the mic stays busy
     () => {},
     (outcome) => outcomes.push(outcome),
   );
+  layer.handleInput(click); // the tap is refused with a hint, not an answer
   assert.deepEqual(env.actions.starts, []); // no mic started over a busy mic
-  env.advance(31_000);
+  env.advance(31_000); // the waiting ttl still closes the turn
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'no-answer');
 });

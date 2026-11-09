@@ -413,6 +413,28 @@ the mic is held, or a turn is already open. Design: popups stay the delivery
 primitive (ledger/retry), dialog_open is the discussion primitive. Suite
 1195/0 (two vm harnesses got the new import stubbed).
 
+`dist/Faceclaw-0.8.7-local-821.apk` (SHA-256
+`28b0548fec973281ed960ae62592d6d552e988b85eb1c0c92631d1fc761ea458`): per the
+wearer, dialog_open's mic must not be hot on open — the line now shows with
+"Тап - ответить · Двойной - пропустить", ONE tap opens the capture (a busy
+mic shows a hint and keeps the line), the ttl times the waiting phase only,
+and a tapped capture into silence settles on the 30s hard cap.
+
+Known issue (open, 2026-11-09): after ~30-40s screen-off the FIRST wake's
+brightness fade is ragged; every immediate re-wake is smooth. The timing
+matches the EvenHub screen-off SUSPEND path exactly (30s screen timeout +
+5s suspend delay): wake after suspend is a full resume (prelude -> CREATE
+-> frame -> READY, wake-lease CLAIM wait, resource-cache reset), so the
+280ms firmware fade plays while resume traffic is still streaming. The
+fade itself is one CFW msg-30 command interpolated by the firmware (no
+BLE stepping), so the suspect is contention/late present, not the ramp.
+Suspected fork aggravator: the stock-G2 grid clock redraws its whole slot
+every minute (hundreds of fillRects at pitch 6), so a minute flip can land
+inside the fade window. Not yet tried: skip the system-card redraw when the
+minute text is unchanged; toggling "Suspend EvenHub when screen off" off
+(Settings, developer group) would confirm the suspend-resume path as the
+source.
+
 ## Unfinished work — do this next
 
 0. **Interactive reminders (TickTick <-> OpenClaw, added 2026-11-08).** The phone side

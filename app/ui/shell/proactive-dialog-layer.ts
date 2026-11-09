@@ -8,17 +8,19 @@ import { type Layer, type LayerActions, type LayerContext } from "../layers";
 
 /**
  * A proactive dialog turn (the assistant's glasses.dialog_open tool): the
- * assistant's opening line is displayed and the microphone opens immediately
- * (hands-free, endpointing ends the utterance) for ONE spoken reply. The
- * transcript comes back to the calling agent as the tool result — the agent
- * owns the conversation and continues with another dialog_open or show_alert.
+ * assistant's opening line is displayed and ONE tap opens the microphone
+ * (endpointing ends the utterance) for ONE spoken reply. The transcript
+ * comes back to the calling agent as the tool result — the agent owns the
+ * conversation and continues with another dialog_open or show_alert. The tap
+ * is deliberate: the wearer hears the prompt first and decides to answer,
+ * rather than having the microphone hot the moment the line appears.
  * Unlike the reminder popup this collects free speech, not a command: nothing
  * is classified and there is no re-ask.
  */
 export type ProactiveDialogRequest = {
   /** The assistant's opening line, shown while listening. */
   text: string;
-  /** How long the layer waits for speech before it closes as no-answer. */
+  /** How long the layer waits for a tap before it closes as no-answer. */
   ttlMs: number;
 };
 
@@ -33,11 +35,13 @@ const CAPTURE_HARD_MS = 30_000;
 /** After the mic stops, how long to wait for the trailing final transcript. */
 const FINALIZE_MS = 2000;
 
-type Phase = "listening" | "finishing" | "settled";
+type Phase = "waiting" | "listening" | "finishing" | "settled";
 
 export class ProactiveDialogLayer implements Layer {
-  private phase: Phase = "listening";
+  private phase: Phase = "waiting";
   private liveText = "";
+  /** Bridge guidance shown in place of the hint (e.g. "mic busy"). */
+  private detail = "";
   private resolved = false;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeSpeechEnd: (() => void) | null = null;
@@ -54,7 +58,9 @@ export class ProactiveDialogLayer implements Layer {
     private readonly dismiss: () => void,
     private readonly onOutcome: (outcome: ProactiveDialogOutcome) => void,
   ) {
-    this.beginCapture();
+    // The ttl covers the waiting phase: an unanswered prompt (no tap) closes
+    // on its own. Once the wearer taps, the capture's own hard cap times it.
+    this.ttlTimer = setTimeout(() => this.settle({ action: "no-answer" }), this.request.ttlMs);
   }
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
@@ -76,12 +82,15 @@ export class ProactiveDialogLayer implements Layer {
       value: 235,
     });
     const hintY = y + height - font.lineHeight - 10;
-    const hint =
-      this.phase === "listening"
-        ? "Говорите · Тап - конец · Двойной - закрыть"
-        : this.phase === "finishing"
-          ? "Работаю..."
-          : "";
+    const hint = this.detail
+      ? this.detail
+      : this.phase === "waiting"
+        ? "Тап - ответить · Двойной - пропустить"
+        : this.phase === "listening"
+          ? "Говорите · Тап - конец · Двойной - закрыть"
+          : this.phase === "finishing"
+            ? "Работаю..."
+            : "";
     if (hint) image.drawText(font, x + 14, hintY, hint, 150);
     if (this.phase === "listening" && this.liveText) {
       // The live transcript replaces the hint line's tail; a long partial
@@ -99,12 +108,19 @@ export class ProactiveDialogLayer implements Layer {
   }
 
   handleInput(event: InputEvent, _ctx: LayerContext): void {
-    if (this.phase === "listening") {
+    if (this.phase === "waiting") {
       if (event.type === "click") {
-        this.endCapture();
+        this.beginCapture();
       } else if (event.type === "double-click") {
         this.settle({ action: "dismissed" });
       }
+      return;
+    }
+    if (this.phase === "listening") {
+      // A tap ends the utterance early (endpointing would wait out the silence).
+      if (event.type === "click") this.endCapture();
+      else if (event.type === "double-click") this.settle({ action: "dismissed" });
+      return;
     }
     // finishing: gestures are ignored, the transcript is being finalized.
   }
@@ -112,7 +128,7 @@ export class ProactiveDialogLayer implements Layer {
   onRemoved(): void {
     // Removed by the shell (screen sleep, clear-to-base) before resolving:
     // that counts as no answer.
-    if (this.phase === "listening") this.stopMic();
+    if (this.isCapturing()) this.stopMic();
     this.settle({ action: "no-answer" });
     this.clearAllTimers();
     this.unsubscribeListeners();
@@ -124,12 +140,21 @@ export class ProactiveDialogLayer implements Layer {
   }
 
   private beginCapture(): void {
+    if (this.resolved || this.phase !== "waiting") return;
+    if (this.micBusy()) {
+      // The line stays; the wearer can tap again once the mic frees up.
+      this.detail = "Микрофон занят - тап позже";
+      this.actions.requestRender();
+      return;
+    }
+    this.phase = "listening";
+    this.detail = "";
+    this.clearTtl();
     this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => this.onTranscript(event));
     // Endpointing ends the utterance when the speaker stops; a tap also ends it.
     this.unsubscribeSpeechEnd = voiceControlBridge.onSpeechEnd(() => this.endCapture());
     this.hardTimer = setTimeout(() => this.endCapture(), CAPTURE_HARD_MS);
-    this.ttlTimer = setTimeout(() => this.settle({ action: "no-answer" }), this.request.ttlMs);
-    if (!this.micBusy()) void this.actions.startVoiceCapture(true);
+    void this.actions.startVoiceCapture(true);
     this.actions.requestRender();
   }
 
@@ -137,7 +162,6 @@ export class ProactiveDialogLayer implements Layer {
     if (this.phase !== "listening") return;
     this.phase = "finishing";
     this.clearHardTimer();
-    this.clearTtl();
     this.stopMic();
     // The final transcript may trail the stop by a beat; give it a window,
     // then deliver whatever we have (an empty transcript is no answer).
@@ -173,12 +197,13 @@ export class ProactiveDialogLayer implements Layer {
   private settle(outcome: ProactiveDialogOutcome): void {
     if (this.resolved) return;
     this.resolved = true;
+    // A final transcript can arrive while the mic is still held (endpointing
+    // missed, or the final trailed the tap-stop): never leave it running.
+    const wasCapturing = this.isCapturing();
     this.phase = "settled";
     this.clearAllTimers();
     this.unsubscribeListeners();
-    // A final transcript can arrive while the mic is still held (endpointing
-    // missed, or the final trailed the tap-stop): never leave it running.
-    if (this.isCapturing()) this.stopMic();
+    if (wasCapturing) this.stopMic();
     this.dismiss();
     this.onOutcome(outcome);
   }

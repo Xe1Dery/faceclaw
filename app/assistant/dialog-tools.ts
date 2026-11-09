@@ -35,10 +35,11 @@ export function registerDialogTools(registry: ToolRegistry = toolRegistry): void
     {
       name: "glasses.dialog_open",
       description:
-        "Open one proactive voice-dialog turn on the glasses: display the given line and listen hands-free " +
-        "for a single spoken answer, blocking until the wearer speaks, double-taps away, or the timeout " +
-        "passes. Returns a JSON object {action, text?, respondedAtMs} where action is answered (text carries " +
-        "the verbatim transcript), dismissed (double-tap), or no-answer (silence or timeout). " +
+        "Open one proactive voice-dialog turn on the glasses: display the given line and wait for the wearer " +
+        "to tap (the microphone opens on the tap, never before), then take ONE spoken answer. Blocks until " +
+        "the wearer answers, double-taps away, or the timeout passes unanswered. Returns a JSON object " +
+        "{action, text?, respondedAtMs} where action is answered (text carries the verbatim transcript), " +
+        "dismissed (double-tap), or no-answer (timeout). " +
         "Use for questions whose answer is a sentence (e.g. what to do with undated tasks), not for task " +
         "delivery — that is glasses.reminder_show's job. Fails while voice input is off or the microphone " +
         "is held by another dialog; on failure, fall back to glasses.show_alert rather than retrying.",
