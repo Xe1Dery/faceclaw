@@ -246,3 +246,53 @@ test('free-text popups return any answer verbatim as other, no re-ask', () => {
   assert.equal(outcomes[0].action, 'other');
   assert.equal(outcomes[0].text, 'первую сделал вторую на вечер');
 });
+
+/** A popup wired to answer through the shared dictation bar (spec 4). */
+function openDelegated(env, delegate, overrides = {}) {
+  const outcomes = [];
+  const dismisses = { count: 0 };
+  const layer = new env.mod.ReminderLayer(
+    { reminderId: 'r1', text: 'Позвонить клиенту', ttlMs: 60_000, ...overrides },
+    env.actions,
+    () => false,
+    () => { dismisses.count += 1; },
+    (outcome) => outcomes.push(outcome),
+    delegate,
+  );
+  return { layer, outcomes, dismisses };
+}
+
+test('a tap hands the answer to the dictation bar; the popup never touches its own mic', () => {
+  const env = layerEnv();
+  let onDone = null;
+  const { layer, outcomes } = openDelegated(env, (cb) => { onDone = cb; return true; });
+  layer.handleInput(click);
+  assert.ok(onDone, 'the bar was asked to open');
+  assert.deepEqual(env.actions.starts, []); // the popup's own capture path stayed shut
+  onDone('сделано');
+  assert.equal(outcomes.length, 1);
+  assert.equal(outcomes[0].action, 'done');
+});
+
+test('a bar closed without sending re-arms the popup for another tap', () => {
+  const env = layerEnv();
+  let opens = 0;
+  let onDone = null;
+  const { layer, outcomes } = openDelegated(env, (cb) => { opens += 1; onDone = cb; return true; });
+  layer.handleInput(click);
+  onDone(null); // closed without sending
+  assert.equal(outcomes.length, 0);
+  layer.handleInput(click);
+  assert.equal(opens, 2); // the tap re-opened the bar
+  onDone('через 10 минут');
+  assert.equal(outcomes[0].action, 'snooze');
+  assert.equal(outcomes[0].minutes, 10);
+});
+
+test('a refused bar keeps the popup open with a busy note', () => {
+  const env = layerEnv();
+  const { layer, outcomes } = openDelegated(env, () => false);
+  layer.handleInput(click);
+  assert.equal(outcomes.length, 0); // still open, waiting
+  assert.deepEqual(env.actions.starts, []);
+});

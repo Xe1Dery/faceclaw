@@ -169,3 +169,55 @@ test('a busy mic refuses the tap and the dialog still times out', () => {
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'no-answer');
 });
+
+/** A question wired to answer through the shared dictation bar (spec 4). */
+function openDelegated(env, delegate) {
+  const outcomes = [];
+  const layer = new env.mod.ProactiveDialogLayer(
+    { text: 'Есть задачи без времени — что с ними?', ttlMs: 45_000 },
+    env.actions,
+    () => false,
+    () => {},
+    (outcome) => outcomes.push(outcome),
+    delegate,
+  );
+  return { layer, outcomes };
+}
+
+test('a tap hands the answer to the dictation bar; the question never touches its own mic', () => {
+  const env = layerEnv();
+  let onDone = null;
+  const { layer, outcomes } = openDelegated(env, (cb) => { onDone = cb; return true; });
+  layer.handleInput(click);
+  assert.ok(onDone, 'the bar was asked to open');
+  assert.deepEqual(env.actions.starts, []); // the layer's own capture path stayed shut
+  onDone('сделай на вечер');
+  assert.equal(outcomes.length, 1);
+  assert.equal(outcomes[0].action, 'answered');
+  assert.equal(outcomes[0].text, 'сделай на вечер');
+});
+
+test('a bar closed without sending re-arms the question for another tap', () => {
+  const env = layerEnv();
+  let opens = 0;
+  let onDone = null;
+  const { layer, outcomes } = openDelegated(env, (cb) => { opens += 1; onDone = cb; return true; });
+  layer.handleInput(click);
+  onDone(null); // closed without sending
+  assert.equal(outcomes.length, 0);
+  layer.handleInput(click);
+  assert.equal(opens, 2); // the tap re-opened the bar
+  onDone('отмени все');
+  assert.equal(outcomes[0].action, 'answered');
+});
+
+test('a delegated question does not expire while the bar is answering', () => {
+  const env = layerEnv();
+  let onDone = null;
+  const { layer, outcomes } = openDelegated(env, (cb) => { onDone = cb; return true; });
+  layer.handleInput(click);
+  env.advance(60_000); // past the ttl: the bar owns the timing now
+  assert.equal(outcomes.length, 0);
+  onDone('разобрать позже');
+  assert.equal(outcomes[0].action, 'answered');
+});

@@ -1599,7 +1599,13 @@ class Shell {
    * with the no-link frame instead of recording. Returns false when a dialog
    * already holds the mic or the bar cannot open now.
    */
-  openAssistantDictation(options: { autoSend?: boolean } = {}): boolean {
+  openAssistantDictation(options: {
+    autoSend?: boolean;
+    /** Where the sent text goes; defaults to a new assistant turn. */
+    onSent?: (text: string) => void;
+    /** Fires instead of onSent when the bar closed without sending. */
+    onClosed?: () => void;
+  } = {}): boolean {
     if (this.activeDictationBar || this.activeVoiceLayer || this.activeKeyboardLayer) return false;
     if (this.foregroundWindow()?.isVoiceCapturing?.()) return false;
     if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
@@ -1626,7 +1632,8 @@ class Shell {
           voiceActivity.setActive(false);
           this.noteUserActivity();
         }
-        if (outcome.action === "sent") this.sendToAssistant(outcome.text);
+        if (outcome.action === "sent") (options.onSent ?? ((text) => this.sendToAssistant(text)))(outcome.text);
+        else options.onClosed?.();
       },
       autoSend,
     });
@@ -1985,13 +1992,19 @@ class Shell {
         || this.assistantSession?.isTurnActive(),
       ),
       () => {
-        this.stack.popIfTop((top) => top === layer);
+        // The dictation bar may sit above the popup while its answer settles.
+        if (!this.stack.popIfTop((top) => top === layer)) this.stack.remove(layer);
         this.config.requestShellRender();
       },
       (outcome) => {
         this.activeReminders.delete(request.reminderId);
         settlePromise(outcome);
       },
+      (onDone) => this.openAssistantDictation({
+        autoSend: false,
+        onSent: (text) => onDone(text),
+        onClosed: () => onDone(null),
+      }),
     );
     this.activeReminders.set(request.reminderId, { layer, promise });
     this.stack.push(layer);
@@ -2036,7 +2049,7 @@ class Shell {
       this.config.actions,
       () => Boolean(this.activeVoiceLayer || this.activeDictationBar || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()),
       () => {
-        this.stack.popIfTop((top) => top === layer);
+        if (!this.stack.popIfTop((top) => top === layer)) this.stack.remove(layer);
         this.config.requestShellRender();
       },
       (outcome) => {
@@ -2045,6 +2058,11 @@ class Shell {
         this.noteUserActivity();
         settlePromise(outcome);
       },
+      (onDone) => this.openAssistantDictation({
+        autoSend: false,
+        onSent: (text) => onDone(text),
+        onClosed: () => onDone(null),
+      }),
     );
     this.activeProactiveDialog = { layer, promise };
     this.stack.push(layer);

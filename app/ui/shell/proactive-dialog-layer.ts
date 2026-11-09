@@ -43,6 +43,8 @@ export class ProactiveDialogLayer implements Layer {
   /** Bridge guidance shown in place of the hint (e.g. "mic busy"). */
   private detail = "";
   private resolved = false;
+  /** The answer was delegated to the dictation bar, not this layer's own mic. */
+  private delegated = false;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeSpeechEnd: (() => void) | null = null;
   private ttlTimer: ReturnType<typeof setTimeout> | null = null;
@@ -57,9 +59,20 @@ export class ProactiveDialogLayer implements Layer {
     /** Pops this layer off the stack. */
     private readonly dismiss: () => void,
     private readonly onOutcome: (outcome: ProactiveDialogOutcome) => void,
+    /**
+     * Optional answer-by-bar delegation (spec 4): a tap raises the shared
+     * dictation bar instead of this layer's own single-utterance capture.
+     * Returns whether the bar opened; the callback fires once with the sent
+     * text or null when the bar closed without sending.
+     */
+    private readonly delegateAnswer?: (onDone: (text: string | null) => void) => boolean,
   ) {
     // The ttl covers the waiting phase: an unanswered prompt (no tap) closes
     // on its own. Once the wearer taps, the capture's own hard cap times it.
+    this.armTtl();
+  }
+
+  private armTtl(): void {
     this.ttlTimer = setTimeout(() => this.settle({ action: "no-answer" }), this.request.ttlMs);
   }
 
@@ -84,8 +97,10 @@ export class ProactiveDialogLayer implements Layer {
     const hintY = y + height - font.lineHeight - 10;
     const hint = this.detail
       ? this.detail
-      : this.phase === "waiting"
-        ? "Тап - ответить · Двойной - пропустить"
+      : this.delegated
+        ? "Слушаю..."
+        : this.phase === "waiting"
+          ? "Тап - ответить · Двойной - пропустить"
         : this.phase === "listening"
           ? "Говорите · Тап - конец · Двойной - закрыть"
           : this.phase === "finishing"
@@ -141,6 +156,22 @@ export class ProactiveDialogLayer implements Layer {
 
   private beginCapture(): void {
     if (this.resolved || this.phase !== "waiting") return;
+    if (this.delegateAnswer) {
+      // The answer is dictated into the shared bar (spec 2/4): the bar draws
+      // over the question, the question waits below it for the result.
+      if (!this.delegateAnswer((text) => this.onDelegatedAnswer(text))) {
+        this.detail = "Микрофон занят - тап позже";
+        this.actions.requestRender();
+        return;
+      }
+      this.delegated = true;
+      this.detail = "";
+      // The bar owns the timing while the answer is dictated; the question
+      // must not expire mid-sentence.
+      this.clearTtl();
+      this.actions.requestRender();
+      return;
+    }
     if (this.micBusy()) {
       // The line stays; the wearer can tap again once the mic frees up.
       this.detail = "Микрофон занят - тап позже";
@@ -156,6 +187,21 @@ export class ProactiveDialogLayer implements Layer {
     this.hardTimer = setTimeout(() => this.endCapture(), CAPTURE_HARD_MS);
     void this.actions.startVoiceCapture(true);
     this.actions.requestRender();
+  }
+
+  /** Bar delegation result: the sent text answers the question verbatim. */
+  private onDelegatedAnswer(text: string | null): void {
+    if (this.resolved) return;
+    this.delegated = false;
+    if (!text) {
+      // Closed without sending: back to waiting, the TTL runs again.
+      this.phase = "waiting";
+      this.detail = "Тап - ответить";
+      this.armTtl();
+      this.actions.requestRender();
+      return;
+    }
+    this.settle({ action: "answered", text });
   }
 
   private endCapture(): void {
