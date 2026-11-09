@@ -267,8 +267,11 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
     handleInput(event, ctx) { if (event.type === 'double-click') ctx.stack.pop(); }
   }
   const voiceDialogs = [];
+  const dictationBars = [];
   const settings = { wakeWordActionSetting: { get: () => wakeAction }, brightnessSetting: { get: () => 'auto' },
-    assistantSkipConfirmationSetting: { get: () => skipConfirmation } };
+    assistantSkipConfirmationSetting: { get: () => skipConfirmation },
+    assistantBackendSetting: { get: () => 'external' } };
+  const bridge = { assistantBridge: { isConnected: () => true } };
   const { shell, rawInputEventToInputEvent } = load('app/ui/shell/shell.ts', {
     '../../graphics/shell-scene': { encodeShellScene: () => new Uint8Array([0, 0]) },
     '../../graphics/image': images, '../../graphics/plane': {}, '../../graphics/ui-fonts': {}, '../../g2/events': load('app/g2/events.ts', {}),
@@ -280,6 +283,12 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
       onRemoved() { this.options.onClosed(); }
     } }, './keyboard-input': {}, './voice-activity': { voiceActivity: { setActive() {} } }, './assistant': {},
     './reminder-layer': {}, './proactive-dialog-layer': {},
+    './dictation-bar': { DictationBarLayer: class {
+      constructor(options) { this.options = options; dictationBars.push(options); }
+      startCapture() {}
+      onRemoved() { this.options.onDone({ action: 'closed' }); }
+    } }, DictationRefusalLayer: class { onRemoved() {} },
+    '../../assistant/bridge-client': bridge,
     '../../assistant/conversations': {}, '../../assistant/models': {}, '../../native/settings-store': {},
     '../notifications': {}, '../dashboard-settings': settings, './ambient-cards': {},
     './chrome-layer': { ShellChromeLayer: class {} }, './modal-layer': {}, './tool-debug-layer': {},
@@ -287,6 +296,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
     '../../native/notification-icons': {}, '../../native/notification-sources': {},
     '../../assistant/tool-registry': {}, './geometry': {
       sidebarWidth: () => 64, minWindowTop: () => 96, switcherPosition: () => 'left', uiDepth: () => 0,
+      interfaceBottom: () => 384,
       screenWidth: () => 640, screenHeight: () => 480,
       appViewportRect: () => ({ x: 64, y: 124, width: 576, height: 260 }),
     },
@@ -316,10 +326,10 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
   });
   shell.registerWindow(app.window);
   shell.focusWindow('ai-chat');
-  return { shell, app, input, menus, voiceDialogs, rawInputEventToInputEvent, microphone: () => microphone, event: (type) => gestures.makeInputEvent({ type }) };
+  return { shell, app, input, menus, voiceDialogs, dictationBars, rawInputEventToInputEvent, microphone: () => microphone, event: (type) => gestures.makeInputEvent({ type }) };
 }
 
-test('wakeword wakes the shared shell, respects its action, and opens only one hands-free assistant dialog', async () => {
+test('wakeword wakes the shared shell, respects its action, and opens only one hands-free dictation bar', async () => {
   for (const wakeAction of ['off', 'turn-screen-on', 'voice-input']) {
     const env = shellEnv({ wakeAction, skipConfirmation: true });
     env.shell.isAssistantAvailable = () => true;
@@ -329,14 +339,12 @@ test('wakeword wakes the shared shell, respects its action, and opens only one h
     await env.shell.receiveInput(event);
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(env.shell.isScreenOn(), wakeAction !== 'off');
-    assert.equal(env.voiceDialogs.length, wakeAction === 'voice-input' ? 1 : 0);
+    assert.equal(env.dictationBars.length, wakeAction === 'voice-input' ? 1 : 0);
     if (wakeAction === 'voice-input') {
-      const options = env.voiceDialogs[0];
-      assert.equal(options.handsFree, true);
+      const options = env.dictationBars[0];
       assert.equal(options.autoSend, true);
-      assert.equal(options.sendTargets[options.defaultTargetIndex].id, 'assistant');
       await env.shell.receiveInput(event);
-      assert.equal(env.voiceDialogs.length, 1);
+      assert.equal(env.dictationBars.length, 1);
     }
     env.shell.stack.clearToBase();
   }

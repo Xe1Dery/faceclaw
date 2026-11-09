@@ -427,6 +427,17 @@ export function minWindowTop(appId?: string): number {
 }
 
 /**
+ * Bottom edge (y) of the current interface: the min-height window band plus
+ * a bottom switcher row hanging under it (nothing extra for a popup switcher
+ * or when the row is hidden). Shell overlays that anchor to the interface's
+ * lowest point (the dictation bar) use this, so they ride under the band
+ * wherever Display > Vertical position pins it, not at the screen bottom.
+ */
+export function interfaceBottom(appId?: string): number {
+  return minWindowTop(appId) + minWindowHeight(appId) + switcherRowHeight(appId);
+}
+
+/**
  * Top edge (y) of a window's header; max-height windows pin to the screen
  * top. A bottom switcher row hangs under the band, so the band and a
  * one-row switcher together distribute the screen's slack. A switcher of

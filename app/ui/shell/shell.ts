@@ -20,6 +20,8 @@ import {
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
+import { DictationBarLayer, DictationRefusalLayer } from "./dictation-bar";
+import { assistantBridge } from "../../assistant/bridge-client";
 import { ReminderLayer, type ReminderOutcome, type ReminderRequest } from "./reminder-layer";
 import { ProactiveDialogLayer, type ProactiveDialogOutcome, type ProactiveDialogRequest } from "./proactive-dialog-layer";
 import { KeyboardInputLayer, type KeyboardInputSession, type KeyboardInputVisibility } from "./keyboard-input";
@@ -81,6 +83,7 @@ import {
   switcherPosition,
   switcherRowHeight,
   uiDepth,
+  interfaceBottom,
   windowBandHeight,
   windowFramed,
   windowTop,
@@ -476,6 +479,8 @@ class Shell {
   // notification icons and the battery indicators.
   private readonly trayIcons = new Map<string, { icon: GrayImage; widget?: TrayWidget }>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
+  /** The assistant dictation bar, while it holds the shell stack (spec 2). */
+  private activeDictationBar: DictationBarLayer | null = null;
   private activeKeyboardLayer: KeyboardInputLayer | null = null;
   // Messages sent from keyboard dialogs, newest first; in memory only.
   private readonly keyboardInputHistory: string[] = [];
@@ -508,9 +513,9 @@ class Shell {
   }
 
   async prepareChatVoiceCapture(): Promise<boolean> {
-    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.voiceDialogPending) return false;
+    if (this.activeVoiceLayer || this.activeDictationBar || this.activeKeyboardLayer || this.voiceDialogPending) return false;
     const ready = (await this.config.prepareVoiceCapture?.()) ?? true;
-    return ready && !this.activeVoiceLayer && !this.activeKeyboardLayer &&
+    return ready && !this.activeVoiceLayer && !this.activeDictationBar && !this.activeKeyboardLayer &&
       this.stack.isAtBase() && this.isWindowFocused("ai-chat");
   }
   private assistantLayer: AssistantLayer | null = null;
@@ -1053,13 +1058,14 @@ class Shell {
 
       this.lastInputAtMs = Date.now();
       const wokeScreen = !this.screenOn && this.wake("sidebar");
-      if (action === "voice-input" && !this.activeVoiceLayer && !this.activeKeyboardLayer) {
+      if (action === "voice-input" && !this.activeVoiceLayer && !this.activeDictationBar && !this.activeKeyboardLayer) {
         if (this.assistantLayer) {
           // The assistant overlay is up; a wakeword continues that conversation.
           this.startAssistantFollowUp(true);
         } else {
-          // Wakeword defaults the highlight to Send to Assistant.
-          this.openVoiceDialog({ handsFree: true, defaultTarget: "assistant" });
+          // Wakeword aimed at the assistant: the dictation bar (spec 2), not
+          // the old full-screen voice dialog.
+          this.openAssistantDictation({ autoSend: assistantSkipConfirmationSetting.get() });
         }
       }
       return { shell: wokeScreen || action === "voice-input", window: false };
@@ -1223,7 +1229,7 @@ class Shell {
   describeInputTarget(): string {
     const foreground = this.foregroundWindow()?.windowId ?? "none";
     if (!this.screenOn) return `fg=${foreground} target=screen-off`;
-    if (this.activeVoiceLayer) return `fg=${foreground} target=voice`;
+    if (this.activeVoiceLayer || this.activeDictationBar) return `fg=${foreground} target=voice`;
     if (this.activeKeyboardLayer?.shownOnGlasses) return `fg=${foreground} target=keyboard`;
     if (!this.stack.isAtBase()) return `fg=${foreground} target=shell-overlay`;
     return `fg=${foreground} target=${this.focus}`;
@@ -1587,6 +1593,52 @@ class Shell {
   }
 
   /**
+   * Open the assistant dictation bar (notes/assistant-redesign-spec.md): the
+   * single voice-input primitive for calling the agent, answering a reminder,
+   * or answering a proactive question. Without the agent bridge up it refuses
+   * with the no-link frame instead of recording. Returns false when a dialog
+   * already holds the mic or the bar cannot open now.
+   */
+  openAssistantDictation(options: { autoSend?: boolean } = {}): boolean {
+    if (this.activeDictationBar || this.activeVoiceLayer || this.activeKeyboardLayer) return false;
+    if (this.foregroundWindow()?.isVoiceCapturing?.()) return false;
+    if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
+      const refusal = new DictationRefusalLayer(this.config.actions, interfaceBottom, () => {
+        this.stack.popIfTop((top) => top === refusal);
+        this.config.requestShellRender();
+      });
+      this.stack.push(refusal);
+      this.config.requestShellRender();
+      return false;
+    }
+    if (!this.screenOn) this.wake("sidebar");
+    const autoSend = options.autoSend ?? assistantSkipConfirmationSetting.get();
+    const layer = new DictationBarLayer({
+      actions: this.config.actions,
+      interfaceBottom,
+      dismiss: () => {
+        this.stack.popIfTop((top) => top === layer);
+        this.config.requestShellRender();
+      },
+      onDone: (outcome) => {
+        if (this.activeDictationBar === layer) {
+          this.activeDictationBar = null;
+          voiceActivity.setActive(false);
+          this.noteUserActivity();
+        }
+        if (outcome.action === "sent") this.sendToAssistant(outcome.text);
+      },
+      autoSend,
+    });
+    this.activeDictationBar = layer;
+    voiceActivity.setActive(true);
+    this.stack.push(layer);
+    layer.startCapture();
+    this.config.requestShellRender();
+    return true;
+  }
+
+  /**
    * Open the voice dialog aimed at the foreground window. Called when the
    * user picks Voice input from the system menu (or an app asks via a
    * start-voice-input message). The menu click already ended the press, so
@@ -1926,7 +1978,12 @@ class Shell {
     const layer = new ReminderLayer(
       request,
       this.config.actions,
-      () => Boolean(this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()),
+      () => Boolean(
+        this.activeVoiceLayer
+        || this.activeDictationBar
+        || this.activeKeyboardLayer
+        || this.assistantSession?.isTurnActive(),
+      ),
       () => {
         this.stack.popIfTop((top) => top === layer);
         this.config.requestShellRender();
@@ -1967,7 +2024,7 @@ class Shell {
   showProactiveDialog(request: ProactiveDialogRequest): Promise<ProactiveDialogOutcome> | null {
     if (this.config.voiceInputEnabled === false) return null;
     if (this.activeProactiveDialog) return null;
-    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()) return null;
+    if (this.activeVoiceLayer || this.activeDictationBar || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()) return null;
     if (!this.screenOn) this.wake("sidebar");
     let settlePromise: (outcome: ProactiveDialogOutcome) => void = () => {};
     const promise = new Promise<ProactiveDialogOutcome>((resolve) => {
@@ -1977,7 +2034,7 @@ class Shell {
     const layer = new ProactiveDialogLayer(
       request,
       this.config.actions,
-      () => Boolean(this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()),
+      () => Boolean(this.activeVoiceLayer || this.activeDictationBar || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()),
       () => {
         this.stack.popIfTop((top) => top === layer);
         this.config.requestShellRender();
