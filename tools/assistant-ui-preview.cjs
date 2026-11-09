@@ -1,0 +1,429 @@
+#!/usr/bin/env node
+/**
+ * Render the proposed assistant UX (dictation bar + chat session + popups)
+ * exactly as the glasses would show it, under plain node, no device.
+ *
+ * This is a MOCKUP tool for the assistant redesign, patterned after
+ * tools/system-card-preview.cjs: same GrayImage canvas, same Terminus bitmap
+ * roles (the offline fallback the device also has), same green-tint PNGs.
+ * The background interface behind the overlays is SCHEMATIC (a stand-in app
+ * window), not a real app render — the point of the mockups is the overlay
+ * geometry, animation end-states, and gesture captions, not the wallpaper.
+ *
+ * Lens facts this tool respects:
+ * - 640x480 content (G2_LENS_WIDTH/HEIGHT), green monochrome panel;
+ * - bottom switcher row is 36px (geometry.ts SWITCHER row), so the dictation
+ *   bar sits ABOVE it: bar bottom edge at y=444, 12px margin;
+ * - small text = terminus12 (lh 12), message text = terminus16 (lh 16);
+ * - popup frames use the shipping ReminderLayer recipe: fill 1, border 90,
+ *   title 200, body 235, hint 150.
+ *
+ * Usage: node tools/assistant-ui-preview.cjs [--out DIR]
+ */
+const fs = require("fs");
+const path = require("path");
+const Module = require("module");
+
+const ROOT = path.join(__dirname, "..");
+const BUILD = path.join(ROOT, ".test-build", "app");
+if (!fs.existsSync(BUILD)) {
+  console.error(`No ${path.relative(ROOT, BUILD)} - run: npx tsc -p tests/tsconfig.json`);
+  process.exit(1);
+}
+
+// Platform shim: the real bdffont.js reads .bdf files through knownFolders.
+const nsCoreStub = {
+  knownFolders: {
+    currentApp: () => ({
+      getFile: (relative) => ({ readTextSync: () => fs.readFileSync(path.join(ROOT, "app", relative), "utf8") }),
+    }),
+  },
+};
+const realLoad = Module._load;
+Module._load = function (request) {
+  if (request === "@nativescript/core") return nsCoreStub;
+  return realLoad.apply(this, arguments);
+};
+
+const UPNG = require("upng-js");
+const { GrayImage, G2_LENS_WIDTH, G2_LENS_HEIGHT } = require(path.join(BUILD, "graphics/image.js"));
+const { getFont } = require(path.join(BUILD, "graphics/bdffont.js"));
+const { wrapText } = require(path.join(BUILD, "graphics/textwrap.js"));
+
+const args = {
+  out: (() => {
+    const i = process.argv.indexOf("--out");
+    return i >= 0 && process.argv[i + 1] !== undefined ? process.argv[i + 1] : path.join(ROOT, "preview", "assistant-ui");
+  })(),
+};
+fs.mkdirSync(args.out, { recursive: true });
+
+const small = getFont("terminus12");
+const medium = getFont("terminus16");
+
+// --- shared chrome -------------------------------------------------------------
+
+const SWITCHER_ROW = 36; // geometry.ts: bottom switcher row height
+const BAR_MARGIN = 12;   // gap between the bar and the switcher row
+const BAR_H = 44;        // one dictation line + 14px vertical padding
+const BAR_BOTTOM = G2_LENS_HEIGHT - SWITCHER_ROW - BAR_MARGIN;
+
+/** Schematic background: top bar + a stand-in app window. */
+function background() {
+  const img = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+  // top status bar: time left, batteries right
+  medium.drawText(img, 16, 10, "14:32", 235);
+  img.drawRect(560, 10, 30, 14, 200); // glasses battery outline
+  img.fillRect(562, 12, 20, 10, 200);
+  img.drawRect(600, 12, 24, 10, 200); // phone battery outline
+  img.fillRect(602, 14, 14, 6, 200);
+  // stand-in window: border + title + rows
+  img.drawRect(32, 40, 576, 320, 90);
+  medium.drawText(img, 46, 50, "Напоминания", 200);
+  const rows = [
+    "Купить билеты на Ригу",
+    "Позвонить маме",
+    "Отдать долг - 1500",
+    "Записаться к стоматологу",
+  ];
+  rows.forEach((row, i) => medium.drawText(img, 46, 82 + i * 30, "· " + row, 235));
+  // bottom switcher row: a few app squares
+  img.drawLine(0, G2_LENS_HEIGHT - SWITCHER_ROW, G2_LENS_WIDTH, G2_LENS_HEIGHT - SWITCHER_ROW, 60);
+  for (let i = 0; i < 5; i++) img.drawRect(200 + i * 56, G2_LENS_HEIGHT - SWITCHER_ROW + 8, 20, 20, 120);
+  return img;
+}
+
+/** Mic glyph: capsule + stand, ~10x14 at (x, y). */
+function drawMic(img, x, y, value) {
+  img.fillRect(x + 3, y, 4, 10, value);
+  img.fillRect(x + 2, y + 1, 6, 8, value);
+  img.drawLine(x + 1, y + 6, x + 9, y + 6, value);
+  img.drawLine(x + 1, y + 7, x + 9, y + 7, value);
+  img.drawLine(x + 5, y + 9, x + 5, y + 13, value);
+  img.drawLine(x + 3, y + 13, x + 7, y + 13, value);
+}
+
+/**
+ * The dictation bar. opts: {text, wide, controls, countdown}
+ * - narrow: fixed 280px; wide: grows to 576px as words stop fitting;
+ * - controls: the post-dictation hint row (send / redo / close);
+ * - countdown: remaining ms of the auto-send grace, a shrinking underline.
+ */
+function dictationBar(img, opts) {
+  const width = opts.wide ? 576 : 280;
+  const x = ((G2_LENS_WIDTH - width) / 2) | 0;
+  const y = BAR_BOTTOM - BAR_H;
+  img.fillRect(x, y, width, BAR_H, 1);
+  img.drawRect(x, y, width, BAR_H, 120);
+  drawMic(img, x + 14, y + 10, opts.text ? 150 : 235);
+  if (opts.text) {
+    const tx = x + 36;
+    const maxW = width - 36 - 14;
+    if (opts.wide) {
+      // wrapped, the last two lines of the phrase (its tail) shown
+      const lines = wrapText(medium, opts.text, maxW);
+      const shown = lines.slice(-2);
+      shown.forEach((line, i) => medium.drawText(img, tx, y + 6 + i * medium.lineHeight, line, 235));
+    } else {
+      medium.drawText(img, tx, y + 14, opts.text, 235);
+    }
+  } else {
+    small.drawText(img, x + 36, y + 16, "Слушаю...", 150);
+  }
+  if (opts.controls) {
+    const cy = y + BAR_H - small.lineHeight - 4;
+    small.drawText(img, x + 36, cy, "Тап - отправить · Скролл - заново · Двойной - закрыть", 150);
+  }
+  if (opts.countdown !== undefined) {
+    // auto-send grace: a shrinking underline, full width = 1.5s
+    const w = Math.max(0, Math.min(1, opts.countdown / 1500)) * (width - 8);
+    img.fillRect(x + 4, y + BAR_H - 3, w | 0, 2, 200);
+  }
+  return { x, y, width };
+}
+
+/** Chat session window: full-screen takeover, header + message list. */
+function chatWindow(img, opts) {
+  const x = 16;
+  const width = G2_LENS_WIDTH - 32;
+  const top = 8;
+  const height = G2_LENS_HEIGHT - SWITCHER_ROW - 16;
+  img.fillRect(x, top, width, height, 1);
+  img.drawRect(x, top, width, height, 120);
+  // header: name left, link square right (bridge state lives here now)
+  medium.drawText(img, x + 14, top + 8, "Nano", 200);
+  const sq = 12;
+  img.fillRect(x + width - sq - 14, top + 10, sq, sq, opts.link === "down" ? 255 : opts.link === "connecting" ? 120 : 235);
+  if (opts.link === "connecting") img.fillRect(x + width - sq - 9, top + 15, 2, 2, 1);
+  img.drawLine(x, top + 32, x + width, top + 32, 70);
+  // messages, newest last
+  let y = top + 40;
+  for (const msg of opts.messages) {
+    const user = msg.role === "user";
+    const text = user ? "> " + msg.text : msg.text;
+    const lines = wrapText(medium, text, width - 28);
+    const value = user ? 170 : 235;
+    for (const line of lines) {
+      if (y + medium.lineHeight > top + height - (opts.typing ? 24 : 20)) break;
+      medium.drawText(img, x + 14, y, line, value);
+      y += medium.lineHeight;
+    }
+    y += 6;
+  }
+  if (opts.typing) {
+    small.drawText(img, x + 14, top + height - 18, "Nano печатает...", 150);
+  }
+  if (opts.newBelow) {
+    // answer outgrew the window: an arrow promises more below
+    const ax = x + width - 20;
+    const ay = top + height - 16;
+    img.drawLine(ax, ay, ax + 8, ay, 180);
+    img.drawLine(ax + 1, ay + 2, ax + 7, ay + 2, 180);
+    img.drawLine(ax + 2, ay + 4, ax + 6, ay + 4, 180);
+    img.drawLine(ax + 3, ay + 6, ax + 5, ay + 6, 180);
+    img.drawLine(ax + 4, ay + 8, ax + 4, ay + 8, 180);
+  }
+  if (opts.hint) {
+    small.drawText(img, x + 14, top + height - 18, opts.hint, 150);
+  }
+  return { x, top, width, height };
+}
+
+/** Popup frame (reminder / notification): the shipping ReminderLayer recipe. */
+function popup(img, opts) {
+  const x = 32;
+  const width = G2_LENS_WIDTH - 64;
+  const height = 128;
+  const y = opts.overInterface ? 140 : ((G2_LENS_HEIGHT - SWITCHER_ROW - height) / 2) | 0;
+  img.fillRect(x, y, width, height, 1);
+  img.drawRect(x, y, width, height, 90);
+  medium.drawText(img, x + 14, y + 10, opts.title, 200);
+  const bodyLines = wrapText(medium, opts.text, width - 28);
+  bodyLines.slice(0, 3).forEach((line, i) => medium.drawText(img, x + 14, y + 10 + medium.lineHeight + 4 + i * medium.lineHeight, line, 235));
+  const hint = opts.hint || "Тап - ответить · Двойной - пропустить";
+  small.drawText(img, x + 14, y + height - small.lineHeight - 10, hint, 150);
+  return { x, y, width, height };
+}
+
+// --- PNG out (same recipe as system-card-preview) --------------------------------
+
+function greenTint(rgba) {
+  for (let i = 0; i < rgba.length; i += 4) {
+    const v = rgba[i];
+    rgba[i] = Math.round(v * 0.35);
+    rgba[i + 1] = Math.round(v * 0.95);
+    rgba[i + 2] = Math.round(v * 0.45);
+  }
+}
+
+function writePng(name, image) {
+  const baked = image.withDrawsBaked();
+  const rgba = new Uint8Array(baked.width * baked.height * 4);
+  for (let i = 0; i < baked.pixels.length; i += 1) {
+    rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = baked.pixels[i];
+    rgba[i * 4 + 3] = 255;
+  }
+  greenTint(rgba);
+  const file = path.join(args.out, `${name}.png`);
+  fs.writeFileSync(file, Buffer.from(UPNG.encode([rgba.buffer], baked.width, baked.height, 0)));
+  let lit = 0;
+  for (const value of baked.pixels) if (value > 0) lit += 1;
+  if (lit === 0) console.error(`  !! ${file} is entirely blank`);
+  return `${name}.png`;
+}
+
+// --- the mockups -----------------------------------------------------------------
+
+const shots = [];
+function shot(name, title, note, build) {
+  const img = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+  build(img);
+  shots.push({ name, title, note, png: writePng(name, img) });
+}
+
+// 1. Dictation over the live interface, narrow, listening.
+shot(
+  "01-bar-narrow",
+  "Диктовка поверх интерфейса - узкая полоса",
+  "Появилась снизу над рядом переключателя. Пока слова помещаются, ширина не растёт. Подсказок нет, место под них снизу полосы зарезервировано.",
+  (img) => {
+    background().composeInto(img, 0, 0);
+    dictationBar(img, { text: "Поставь" });
+  },
+);
+
+// 2. Expanded bar with a long phrase.
+shot(
+  "02-bar-wide",
+  "Полоса расширилась - фраза не влезает",
+  "Ширина выросла до максимума, текст переносится, видны последние две строки (хвост фразы).",
+  (img) => {
+    background().composeInto(img, 0, 0);
+    dictationBar(img, {
+      wide: true,
+      text: "Напомни мне завтра в семь вечера позвонить маме и купить билеты на Ригу",
+    });
+  },
+);
+
+// 3. Dictation finished: controls appear.
+shot(
+  "03-bar-controls",
+  "Диктовка окончена - появились подсказки",
+  "После молчания строка фиксируется, внизу полосы показываются подсказки жестов. Отправки ещё нет.",
+  (img) => {
+    background().composeInto(img, 0, 0);
+    dictationBar(img, {
+      wide: true,
+      text: "Напомни мне завтра в семь вечера позвонить маме",
+      controls: true,
+    });
+  },
+);
+
+// 4. Auto-send grace: countdown underline.
+shot(
+  "04-bar-countdown",
+  "Автоотправка - полоса обратного отсчёта",
+  "С включённой автоотправкой: под полосой тает линия отсчёта (1.5 с). Тап отправляет сразу, скролл - переговорить.",
+  (img) => {
+    background().composeInto(img, 0, 0);
+    dictationBar(img, {
+      wide: true,
+      text: "Напомни мне завтра в семь вечера позвонить маме",
+      controls: true,
+      countdown: 900,
+    });
+  },
+);
+
+// 5. Chat session, answer arrived.
+shot(
+  "05-chat-answer",
+  "Окно диалога - ответ агента",
+  "Интерфейс скрыт, только диалог. Ответ пришёл - внизу подсказка: тап продолжить, двойной тап выйти.",
+  (img) => {
+    chatWindow(img, {
+      link: "connected",
+      messages: [
+        { role: "user", text: "Напомни мне завтра в семь вечера позвонить маме" },
+        { role: "agent", text: "Готово. Завтра в 19:00 напомню позвонить маме. Ставлю в список «Личное»." },
+      ],
+      hint: "Тап - продолжить · Двойной - выйти",
+    });
+  },
+);
+
+// 6. Chat with a long answer streaming + scroll arrow + reopened bar.
+shot(
+  "06-chat-stream",
+  "Диалог - ответ печатается, диктовка снова вызвана",
+  "Длинный ответ не влез - стрелка обещает продолжение ниже, скроллить можно прямо во время генерации. Тап по окну снова поднял полосу диктовки.",
+  (img) => {
+    chatWindow(img, {
+      link: "connected",
+      messages: [
+        { role: "user", text: "Что у меня завтра по планам?" },
+        { role: "agent", text: "Завтра: в 10:00 созвон с командой, в 13:00 обед с Сергеем, к 18:00 закрыть отчёт по расходам. Между 14:00 и 17:00 окон нет - хорошее время для звонка маме." },
+      ],
+      typing: true,
+      newBelow: true,
+    });
+    dictationBar(img, { text: "Перенеси созвон" });
+  },
+);
+
+// 7. Chat history after several turns.
+shot(
+  "07-chat-history",
+  "Диалог - история накопилась",
+  "Видны и команды, и ответы. Старые сообщения уходят за верхний край; при новом вызове история начинается чисто.",
+  (img) => {
+    chatWindow(img, {
+      link: "connected",
+      messages: [
+        { role: "user", text: "Что у меня завтра по планам?" },
+        { role: "agent", text: "Созвон в 10:00, обед в 13:00, отчёт к 18:00." },
+        { role: "user", text: "Перенеси созвон на 11" },
+        { role: "agent", text: "Перенёс. Осталось: созвон 11:00, обед 13:00." },
+      ],
+      hint: "Тап - продолжить · Двойной - выйти",
+    });
+  },
+);
+
+// 8. Notification on locked glasses: popup only, no interface.
+shot(
+  "08-popup-locked",
+  "Уведомление на заблокированных очках",
+  "Никакого интерфейса за окном - только рамка уведомления, по центру, с переходом яркости.",
+  (img) => {
+    popup(img, {
+      title: "Напоминание",
+      text: "Позвонить маме - сегодня в 19:00",
+      hint: "Тап - ответить · Двойной - пропустить",
+    });
+  },
+);
+
+// 9. Notification over the live interface.
+shot(
+  "09-popup-over",
+  "Уведомление поверх интерфейса",
+  "Интерфейс остаётся видимым, окно выехало снизу-вверх и лежит поверх (позиция - как у ReminderLayer).",
+  (img) => {
+    background().composeInto(img, 0, 0);
+    popup(img, {
+      overInterface: true,
+      title: "Напоминание",
+      text: "Позвонить маме - сегодня в 19:00",
+      hint: "Тап - ответить · Двойной - пропустить",
+    });
+  },
+);
+
+// 10. dialog_open on locked glasses: question joins the session.
+shot(
+  "10-dialog-question",
+  "Вопрос агента на заблокированных очках",
+  "dialog_open: вопрос + приглашение ответить. Тап открывает микрофон; после ответа агент продолжит в полноценном окне диалога, а не одной репликой.",
+  (img) => {
+    popup(img, {
+      title: "Nano",
+      text: "Напоминание «Позвонить маме» просрочено на 2 часа. Перенести на 21:00?",
+      hint: "Тап - ответить голосом · Двойной - пропустить",
+    });
+  },
+);
+
+// 11. Agent invoked on locked glasses: dictation bar alone, no interface.
+shot(
+  "11-bar-locked",
+  "Вызов агента на заблокированных очках",
+  "Интерфейс не поднимается: с переходом яркости появляется только полоса записи (тот же низ экрана). После отправки - окно диалога (05).",
+  (img) => {
+    dictationBar(img, { text: "" });
+  },
+);
+
+// --- HTML sheet -------------------------------------------------------------------
+
+const html = `<!doctype html>
+<meta charset="utf-8">
+<title>Ассистент - редизайн: макеты</title>
+<style>
+ body{background:#111;color:#ddd;font:14px system-ui,sans-serif;margin:24px}
+ h1{font-size:18px} h2{font-size:15px;color:#9c9;margin-top:34px}
+ .note{color:#888;max-width:780px}
+ img{background:#000;border:1px solid #333;display:block;margin:8px 0}
+</style>
+<h1>Ассистент - редизайн: макеты (640×480, Terminus, зелёный тон панели)</h1>
+<p class="note">Фон под оверлеями - схематичный стенд-ин, не реальный экран приложения. Геометрия полос и рамок - честная:
+ряд переключателя 36 px, полоса диктовки прижата к его верхнему краю с отступом 12 px, высота 44 px; рамки уведомлений -
+рецепт ReminderLayer (фон 1, рамка 90, заголовок 200, текст 235, подсказка 150).</p>
+${shots
+  .map((s) => `<h2>${s.title}</h2>\n<p class="note">${s.note}</p>\n<img src="${s.png}" width="640" height="480">`)
+  .join("\n")}
+`;
+fs.writeFileSync(path.join(args.out, "preview.html"), html);
+console.log(`wrote ${shots.length} PNGs + preview.html to ${args.out}`);
