@@ -225,7 +225,10 @@ function drawNotificationCounter(image, count, bottom) {
   const gap = 6;
   const totalW = bellW + gap + textW;
   const x = W - PAD - totalW;
-  const bellTop = bottom - 12;
+  // Vertically centered on the counter text's line, not bottom-aligned: the
+  // bell is shorter than the line, and hanging it at the baseline reads low.
+  const bellH = BELL_VARIANTS[BELL_VARIANT].length;
+  const bellTop = bottom - small.lineHeight + Math.round((small.lineHeight - bellH) / 2);
   drawBell(image, x, bellTop, count > 0 ? 230 : 90);
   image.drawText(small, x + bellW + gap, bottom - small.lineHeight, text, count > 0 ? 230 : 90);
 }
