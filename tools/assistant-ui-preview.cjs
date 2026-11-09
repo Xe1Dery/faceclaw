@@ -17,8 +17,9 @@
  *   of the screen: it anchors under the window band (+ the row under it),
  *   so with Display > Vertical position = top it rides under the top-pinned
  *   band instead of the screen bottom (see interfaceBottom(), --vpos);
- *   the bar is full width from the start and grows DOWNWARD (its top edge
- *   is fixed) as the phrase wraps;
+ *   the bar is full width from the start and grows UPWARD (its bottom edge
+ *   is fixed to the interface bottom) as the phrase wraps — the lowest
+ *   element of the interface can only ever grow up;
  * - gesture hints use the app's own glyph convention (gestures.ts):
  *   ● tap, ●● double-tap, ▲▼ scroll;
  * - small text = terminus12 (lh 12), message text = terminus16 (lh 16);
@@ -101,9 +102,10 @@ function interfaceBottom() {
   return bandTop() + BAND_H + SWITCHER_ROW;
 }
 
-/** Top edge of the one-line bar: its bottom rides 12px above the interface's. */
-function barTop() {
-  return interfaceBottom() - 12 - BAR_H;
+/** Bottom edge of the bar: it rides 12px above the interface bottom and is
+ * the anchor — the bar grows UP from here, never down. */
+function barBottom() {
+  return interfaceBottom() - 12;
 }
 
 /** Schematic background: top bar + a stand-in app window. */
@@ -145,19 +147,19 @@ function drawMic(img, x, y, value) {
 
 /**
  * The dictation bar. opts: {text, controls, countdown}
- * - full width always; one line tall, growing DOWN as the phrase wraps
- *   (top edge fixed); the tail of the phrase is what stays visible;
+ * - full width always; one line tall, growing UP as the phrase wraps
+ *   (bottom edge fixed); the tail of the phrase is what stays visible;
  * - controls: the post-dictation glyph hint row (● send · ▲▼ redo · ●● close);
  * - countdown: remaining ms of the auto-send grace, a shrinking underline
- *   drawn at the bar's bottom edge (so it rides the growth).
+ *   drawn at the bar's fixed bottom edge.
  */
 function dictationBar(img, opts) {
   const x = ((G2_LENS_WIDTH - BAR_W) / 2) | 0;
-  const y = barTop();
-  // the phrase wraps at the full inner width; the bar grows down to fit it
+  // the phrase wraps at the full inner width; the bar grows up to fit it
   const lines = opts.text ? wrapText(medium, opts.text, BAR_W - 36 - 14) : [];
   const shown = lines.slice(0, 4); // hard cap: 4 lines, then it scrolls
   const height = BAR_H + Math.max(0, shown.length - 1) * BAR_LINE + (opts.controls ? small.lineHeight + 4 : 0);
+  const y = barBottom() - height;
   img.fillRect(x, y, BAR_W, height, 1);
   img.drawRect(x, y, BAR_W, height, 120);
   drawMic(img, x + 14, y + 10, opts.text ? 150 : 235);
@@ -292,8 +294,8 @@ shot(
 // 2. Long phrase: the bar grew downward.
 shot(
   "02-bar-grown",
-  "Фраза не влезает - полоса выросла вниз",
-  "Ширина та же, окно растёт вниз на каждую перенесённую строку (верх закреплён), при необходимости закрывая ряд переключателя.",
+  "Фраза не влезает - полоса выросла вверх",
+  "Ширина та же, окно растёт вверх на каждую перенесённую строку (низ закреплён у нижней кромки интерфейса).",
   (img) => {
     background().composeInto(img, 0, 0);
     dictationBar(img, {
@@ -463,7 +465,7 @@ shot(
   (img) => {
     background().composeInto(img, 0, 0);
     const x = ((G2_LENS_WIDTH - BAR_W) / 2) | 0;
-    const y = barTop();
+    const y = barBottom() - BAR_H;
     img.fillRect(x, y, BAR_W, BAR_H, 1);
     img.drawRect(x, y, BAR_W, BAR_H, 90);
     drawMic(img, x + 14, y + 10, 60);
@@ -487,7 +489,7 @@ shot(
     for (let i = 0; i < 5; i++) img.drawRect(200 + i * 56, bt + BAND_H + 8, 20, 20, 120);
     // the bar, anchored under the top-pinned interface
     const x = ((G2_LENS_WIDTH - BAR_W) / 2) | 0;
-    const y = bt + BAND_H + SWITCHER_ROW - 12 - BAR_H;
+    const y = bt + BAND_H + SWITCHER_ROW - 12 - BAR_H; // bottom fixed, grows up
     img.fillRect(x, y, BAR_W, BAR_H, 1);
     img.drawRect(x, y, BAR_W, BAR_H, 120);
     drawMic(img, x + 14, y + 10, 235);
@@ -508,7 +510,7 @@ const html = `<!doctype html>
 </style>
 <h1>Ассистент - редизайн: макеты (640×480, Terminus, зелёный тон панели; позиция интерфейса: ${VPOS})</h1>
 <p class="note">Фон под оверлеями - схематичный стенд-ин, не реальный экран приложения. Геометрия полос и рамок - честная:
-полоса диктовки - самый нижний элемент интерфейса (под полосой окон и рядом переключателя, отступ 12 px), высота 44 px и растёт вниз; рамки уведомлений -
+полоса диктовки - самый нижний элемент интерфейса (под полосой окон и рядом переключателя, отступ 12 px), высота 44 px и растёт вверх (низ закреплён); рамки уведомлений -
 рецепт ReminderLayer (фон 1, рамка 90, заголовок 200, текст 235, подсказка 150).</p>
 ${shots
   .map((s) => `<h2>${s.title}</h2>\n<p class="note">${s.note}</p>\n<img src="${s.png}" width="640" height="480">`)
