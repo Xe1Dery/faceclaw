@@ -380,6 +380,16 @@ are deleted (the fetch now follows the status-bar indicator only). Preview
 tool mirrors all of this (`node tools/system-card-preview.cjs`, weather flag
 dropped). Suite 1178/0.
 
+`dist/Faceclaw-0.8.7-local-818.apk` (SHA-256
+`ba6a0a5e8e30f7c3908c2ce9ce4bd6c1800c7809b59bb5b4d7d3ceeda9732965`) fixes the
+one thing the on-device check of 817 caught: wide digits (0 2 3 4 5 6 8 9)
+fused at pitch 6 because the face's grid leaves a single dot gap between
+neighbouring digit columns. `drawMatrixGrid` now advances one extra clear
+column (pitch px) between digits — accepted on the preview. Also: preview
+`--time` now reaches the widget (frozen Date in the vm globals), and
+CLAUDE.md carries the interface lessons (confirm-before-apply rule, board
+geometry, DisplayOTF grid facts, webpack copy trap).
+
 No GitHub Release was created and no APK was uploaded anywhere.
 
 ## Unfinished work — do this next
