@@ -209,7 +209,7 @@ export class ChatSessionLayer implements Layer {
   }
 
   /** The thread as wrapped lines: user dim with "> ", agent bright, trail last. */
-  private layout(medium: { measureText(t: string): number; getGlyph(c: number): { dwidthX: number } | undefined }, width: number): Array<{ text: string; value: number; height: number; font: "medium" | "small" }> {
+  private layout(medium: { lineHeight: number; measureText(t: string): number; getGlyph(c: number): { dwidthX: number } | undefined }, width: number): Array<{ text: string; value: number; height: number; font: "medium" | "small" }> {
     const small = getDefaultSmallFont();
     const out: Array<{ text: string; value: number; height: number; font: "medium" | "small" }> = [];
     for (const message of this.history) {
