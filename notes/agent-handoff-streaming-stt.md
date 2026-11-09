@@ -464,6 +464,34 @@ the agent; dialog_open on LOCKED glasses shows the frame after wake (the
 lock surface still swallows taps until unlocked — firmware behavior);
 standalone reminder/alert frames show on opaque black over locked glasses.
 
+`dist/Faceclaw-0.8.7-local-824.apk` (SHA-256
+`f6fcc59d68870e56b17f1037ef19b41a5947ea2aecdf6e0062a3eec0525fded6`,
+versionCode 824, signed by the same `1b22...d264` key; installs over 823
+without data loss) — the wearer's five issues from 823:
+1. The chat window is no longer a full-screen takeover (dcf1086). It paints
+   through paintBelow onto a transparent canvas and lays an opaque panel
+   over its viewport, so the status bar, the frame and the switcher stay
+   around it; the band follows the Display mode, overridable per app under
+   Settings > Assistant > Display mode (the same AppDisplayLayout as
+   Navigate/Terminal; the controller repaints the shell when it changes).
+   The splitPlaneRows generalization (e1eba69) is what lets its mostly-
+   opaque full-size canvas pass the 64 KiB scene budget as strips.
+2. Closed earlier (0a8f4b0): standalone frames cool the interface instead
+   of painting over it — the panel cannot occlude with black.
+3. The dictation bar slides up from the screen bottom over 180 ms on
+   unlocked glasses (ce29430), the same entry the popups use; standalone
+   bars keep arriving with the brightness transition.
+4. Thread hierarchy is size/weight, not brightness (10f2d47): the panel is
+   monochrome, dimmed text is dither there. User lines and answers print
+   solid 255 (user lines keep the "> " prefix); only transient text is dim
+   (trail 130, hints/arrow 170).
+5. The dead-bar freeze (c345240): sendNow ran onDone before dismiss, and
+   onDone pushes the chat window over the bar, so the dismiss (top-only
+   pop) left the dead bar stacked under the window — it reappeared on the
+   window's close and swallowed input until the timeout. Dismiss now runs
+   first; a dead bar that stays stacked pops itself on double-click.
+Suite 1240/0/3-skip.
+
 Closed issue (2026-11-09): after ~30-40s screen-off the FIRST wake's
 brightness fade was ragged; every immediate re-wake was smooth. Diagnosis
 confirmed by the wearer: turning "Suspend EvenHub when screen off" off
