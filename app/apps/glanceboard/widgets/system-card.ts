@@ -6,13 +6,12 @@ import {
   drawDenseBatteries,
   type BatteryDevice,
 } from "../../../graphics/battery";
-import { type GrayImage, type UiFont } from "../../../graphics/image";
+import { GrayImage, imageFromAsciiArt, type UiFont } from "../../../graphics/image";
 import { ensureLocationPermission, hasLocationPermission } from "../../../native/location-permissions";
-import { onAndroidNotificationsChanged, readActiveNotificationIcons } from "../../../native/notification-icons";
-import { NOTIFICATION_ICON_SIZE } from "../../../native/notification-types";
+import { ALL_NOTIFICATIONS, onAndroidNotificationsChanged, readActiveNotificationIcons } from "../../../native/notification-icons";
 import { readPhoneBatteryState } from "../../../native/phone-battery";
 import { weatherBridge } from "../../../native/weather";
-import { formatClockDate, formatClockTime } from "../../../ui/clock-format";
+import { formatClockTime } from "../../../ui/clock-format";
 import {
   batteryDisplayModeSetting,
   batteryIndicatorVisible,
@@ -34,20 +33,33 @@ import { formatCountdown, sortTimers, timerDisplayName, timerPhase, timerRemaini
 import { lineStep } from "../../../ui/metrics";
 import { drawWeatherReading, measureWeatherReading, weatherReading } from "../../weather/weather-icons";
 import { weatherShowOnSystemCardSetting } from "../../weather/weather-settings";
+import { assistantBridge } from "../../../assistant/bridge-client";
+import {
+  drawMatrixText,
+  loadMatrixFont,
+  measureMatrixText,
+  MATRIX_FONT_48,
+  MATRIX_FONT_96,
+  MATRIX_FONT_240,
+  type MatrixFont,
+} from "../matrix-font";
 import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
-const NOTIFICATION_ICON_GAP = 4;
 const BATTERY_ITEM_GAP = 12;
 const BATTERY_LABEL_VALUE = 150;
 /** Gap between the battery block and the weather reading stacked after it. */
 const SIDE_BLOCK_GAP = 6;
-/** Rows between the time and the date. */
-const CLOCK_LINE_GAP = 2;
-/** Rows between the clock and the timers, and between the timers and the notification icons. */
+/** Fraction of one digit row's height left between the hours and the minutes. */
+const CLOCK_LINE_GAP_FRACTION = 0.12;
+/** Rows between the clock and the timers, and between the timers and the bottom row. */
 const TIMERS_GAP = 4;
 const TIMER_NAME_GAP = 8;
+/** Side of the OpenClaw link's status square. */
+const LINK_SQUARE = 8;
+/** Gap between the bell icon and its count. */
+const BELL_COUNT_GAP = 6;
 
 type BatteryItem = { label: string; device: BatteryDevice; percent: number; charging: boolean };
 type Rect = { x: number; y: number; width: number; height: number };
@@ -56,12 +68,57 @@ type SideBlock = { width: number; height: number; draw: (image: GrayImage, left:
 /** The main column's horizontal extent on some rows. */
 type Span = { left: number; right: number };
 
+/** RU date as "09.11.26": zero-padded day, month, two-digit year. */
+export function formatClockDateRu(now: Date): string {
+  const day = String(now.getDate()).padStart(2, "0");
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const year = String(now.getFullYear() % 100).padStart(2, "0");
+  return `${day}.${month}.${year}`;
+}
+
+/**
+ * The clock's HH and MM halves for the stacked matrix display. The shared
+ * formatter's 12-hour spelling ("2:05 PM") has no room in the stacked grid,
+ * so 12-hour mode drops the AM/PM suffix here — the hour digits still read
+ * correctly, and the suffix was always the noisiest part of the big clock.
+ */
+export function clockTimeParts(now: Date): { hours: string; minutes: string } {
+  const text = formatClockTime(now);
+  const match = /^(\d{1,2}):(\d{2})/.exec(text);
+  if (!match) return { hours: "--", minutes: "--" };
+  return { hours: match[1]!.padStart(2, "0"), minutes: match[2]! };
+}
+
+/** Tall outline bell (ascii art, same idiom as the battery device icons). */
+const BELL_ART = [
+  "....##....",
+  "...#..#...",
+  "..#....#..",
+  "..#....#..",
+  "..#....#..",
+  "..#....#..",
+  ".#......#.",
+  ".#......#.",
+  "#........#",
+  "##########",
+  "..........",
+  "....##....",
+];
+const BELL_ICON = imageFromAsciiArt(BELL_ART, { "#": 255, ".": 0 });
+
+/** The OpenClaw link's bottom-row text, Russian to match the wearer's setup. */
+export function linkStatusLabel(phase: string): string {
+  if (phase === "connected") return "OpenClaw: ок";
+  if (phase === "connecting") return "OpenClaw: …";
+  return "OpenClaw: ОБРЫВ";
+}
+
 export const systemCardShowTimeSetting = new ConfigSettingBoolean({
   id: "glanceboard-system-card-show-time",
   label: "Time",
   storageKey: "glanceboard.systemCard.showTime",
   defaultValue: true,
-  description: "Show the clock on the system card.",
+  description: "Show the clock on the system card, big and centred.",
 });
 
 export const systemCardShowDateSetting = new ConfigSettingBoolean({
@@ -69,7 +126,7 @@ export const systemCardShowDateSetting = new ConfigSettingBoolean({
   label: "Date",
   storageKey: "glanceboard.systemCard.showDate",
   defaultValue: true,
-  description: "Show the date on the system card, under the time.",
+  description: "Show the date on the system card, top left.",
 });
 
 export const systemCardShowBatterySetting = new ConfigSettingBoolean({
@@ -86,7 +143,17 @@ export const systemCardShowNotificationsSetting = new ConfigSettingBoolean({
   label: "Notifications",
   storageKey: "glanceboard.systemCard.showNotifications",
   defaultValue: true,
-  description: "Show the icons of the phone's notifications along the edge of the system card.",
+  description: "Show the count of the phone's active notifications as a bell counter on the system card.",
+});
+
+/** Whether the OpenClaw bridge's link state shows on the system card. */
+export const systemCardShowLinkSetting = new ConfigSettingBoolean({
+  id: "glanceboard-system-card-show-link",
+  label: "OpenClaw link",
+  storageKey: "glanceboard.systemCard.showLink",
+  defaultValue: true,
+  description:
+    "Show the OpenClaw assistant bridge's link state on the system card: a filled square when connected, an empty one when the link is down.",
 });
 
 export const systemCardFlipHorizontalSetting = new ConfigSettingBoolean({
@@ -95,7 +162,7 @@ export const systemCardFlipHorizontalSetting = new ConfigSettingBoolean({
   storageKey: "glanceboard.systemCard.flipHorizontal",
   defaultValue: false,
   description:
-    "Mirror the system card left to right: time, date, timers and notifications on the right, batteries and weather on the left.",
+    "Mirror the system card left to right: date, timers and the link state on the right, batteries, weather and the notification counter on the left.",
 });
 
 export const systemCardFlipVerticalSetting = new ConfigSettingBoolean({
@@ -104,7 +171,7 @@ export const systemCardFlipVerticalSetting = new ConfigSettingBoolean({
   storageKey: "glanceboard.systemCard.flipVertical",
   defaultValue: false,
   description:
-    "Mirror the system card top to bottom: notifications along the top; time, date, batteries and weather along the bottom.",
+    "Mirror the system card top to bottom: the link state and notification counter along the top; date, batteries and weather along the bottom.",
 });
 
 /**
@@ -123,6 +190,7 @@ export function systemCardSettingsMenuItems(): MenuItem[] {
       },
     }),
     toggleSettingMenuItem(systemCardShowNotificationsSetting),
+    toggleSettingMenuItem(systemCardShowLinkSetting),
     toggleSettingMenuItem(systemCardFlipHorizontalSetting),
     toggleSettingMenuItem(systemCardFlipVerticalSetting),
   ];
@@ -141,14 +209,17 @@ function requestWeatherLocationAccess(): void {
 }
 
 /**
- * Date and time, the phone's notification icons, the phone/watch/G2/R1
- * battery indicators (the Wear OS watch's only while one is reachable), the
- * current weather, and the Timers app's countdowns: the top bar's contents
- * plus timers, laid out for a card. Every part but the timers can be turned
- * off, and the layout mirrored either way, in the card's submenu of
- * Glanceboard > Settings. Battery style and per-device visibility follow
- * Settings > Customization > Battery indicators, so the card agrees with
- * the bar. Countdowns tick once a second only while one is running.
+ * The stock-G2-style clock face: the big dot-matrix time (hours stacked over
+ * minutes, DisplayOTF raster) centred, the date top left, the phone/watch/G2/R1
+ * battery indicators top right (the Wear OS watch's only while one is
+ * reachable, and the weather under them when enabled), the OpenClaw bridge's
+ * link state bottom left, and the phone's active notifications as a bell
+ * counter bottom right. Running timers fill the band under the clock. Every
+ * block but the timers can be turned off, and the layout mirrored either way,
+ * in the card's submenu of Glanceboard > Settings. Battery style and
+ * per-device visibility follow Settings > Customization > Battery indicators,
+ * so the card agrees with the bar. Countdowns tick once a second only while
+ * one is running.
  */
 export class SystemCardWidget implements GlanceWidget {
   private requestRender: (() => void) | null = null;
@@ -158,6 +229,7 @@ export class SystemCardWidget implements GlanceWidget {
   private unsubscribeSettings: (() => void) | null = null;
   private unsubscribeTimers: (() => void) | null = null;
   private unsubscribeWeather: (() => void) | null = null;
+  private unsubscribeBridge: (() => void) | null = null;
 
   start(requestRender: () => void): void {
     this.requestRender = requestRender;
@@ -170,6 +242,8 @@ export class SystemCardWidget implements GlanceWidget {
     });
     // The Weather app's indicator keeps the bridge refreshing; this only listens.
     this.unsubscribeWeather = weatherBridge.onStateChange(() => this.requestRender?.());
+    // The link square repaints the moment the assistant bridge's state flips.
+    this.unsubscribeBridge = assistantBridge.onStateChange(() => this.requestRender?.());
     this.syncSecondTick();
   }
 
@@ -187,6 +261,8 @@ export class SystemCardWidget implements GlanceWidget {
     this.unsubscribeTimers = null;
     this.unsubscribeWeather?.();
     this.unsubscribeWeather = null;
+    this.unsubscribeBridge?.();
+    this.unsubscribeBridge = null;
   }
 
   /** Countdowns change every second; run that clock only while one is running. */
@@ -213,19 +289,21 @@ export class SystemCardWidget implements GlanceWidget {
     }, untilNextMinute);
   }
 
+  /** The stock-G2 card: date and batteries up top, a big stacked matrix
+   * clock in the middle, the OpenClaw link and the notification counter
+   * along the bottom. */
   paint(image: GrayImage): void {
-    const large = glanceFont.large();
     const medium = glanceFont.medium();
     const small = glanceFont.small();
     const now = new Date();
     const { width, height } = image;
 
-    // Unflipped, the time and date run down the left from the top, the
-    // batteries and then the weather stack down the right edge, and the
-    // notification icons take the bottom row, with the timers in the band
-    // between the date and the icons. The flips mirror where each block sits
-    // (positions below are given for the unflipped card), not what is inside
-    // it: the time stays above the date, and timers read soonest first.
+    // Unflipped, the date sits top left and the batteries (then the weather)
+    // stack down the right edge, the big clock is centred, and the link
+    // state and the notification counter take the bottom corners. Running
+    // timers fill whatever band is left under the clock. The flips mirror
+    // where each block sits (positions below are given for the unflipped
+    // card), not what is inside it.
     const flipX = systemCardFlipHorizontalSetting.get();
     const flipY = systemCardFlipVerticalSetting.get();
     const placeX = (x: number, w: number): number => (flipX ? width - x - w : x);
@@ -261,51 +339,123 @@ export class SystemCardWidget implements GlanceWidget {
       }
       return { left, right };
     };
-    const lineX = ({ left, right }: Span, lineWidth: number): number => (flipX ? right - lineWidth : left);
 
-    const showTime = systemCardShowTimeSetting.get();
-    const showDate = systemCardShowDateSetting.get();
-    const timeText = formatClockTime(now);
-    const dateText = formatClockDate(now);
-    const clockHeight = (timeFont: UiFont): number =>
-      (showTime ? timeFont.lineHeight : 0) + (showTime && showDate ? CLOCK_LINE_GAP : 0) + (showDate ? medium.lineHeight : 0);
-    // The time drops to the medium font when the large one would run into a side block.
-    let timeFont = large;
-    if (showTime) {
-      const top = placeY(PAD, clockHeight(large));
-      const { left, right } = span(top, top + large.lineHeight);
-      if (large.measureText(timeText) > right - left) timeFont = medium;
-    }
-    const clockSize = clockHeight(timeFont);
-    let y = placeY(PAD, clockSize);
-    if (showTime) {
-      image.drawText(timeFont, lineX(span(y, y + timeFont.lineHeight), timeFont.measureText(timeText)), y, timeText, 230);
-      y += timeFont.lineHeight + CLOCK_LINE_GAP;
-    }
-    if (showDate) {
-      image.drawText(medium, lineX(span(y, y + medium.lineHeight), medium.measureText(dateText)), y, dateText, 170);
+    // Top left: the date, RU-style (09.11.26).
+    if (systemCardShowDateSetting.get()) {
+      const dateText = formatClockDateRu(now);
+      const top = placeY(PAD, medium.lineHeight);
+      image.drawText(medium, placeX(PAD, medium.measureText(dateText)), top, dateText, 170);
     }
 
+    // Bottom row geometry, needed before the clock so it can centre in the
+    // space the bottom row leaves it.
+    const bottomRowHeight = small.lineHeight;
+    const showLink = systemCardShowLinkSetting.get();
     const showNotifications = systemCardShowNotificationsSetting.get();
-    const bandTop = clockSize > 0 ? PAD + clockSize + TIMERS_GAP : PAD;
-    const bandBottom = height - PAD - (showNotifications ? NOTIFICATION_ICON_SIZE + TIMERS_GAP : 0);
-    drawTimers(image, small, {
-      top: placeY(bandTop, bandBottom - bandTop),
-      height: bandBottom - bandTop,
-      fromBottom: flipY,
-      alignRight: flipX,
-      span,
-    }, now.getTime());
+    const bottomTop = height - PAD - bottomRowHeight;
 
-    // Notification icons, as many as fit, the first nearest the main column's edge.
-    const maxIcons = Math.max(0, ((width - 2 * PAD + NOTIFICATION_ICON_GAP) / (NOTIFICATION_ICON_SIZE + NOTIFICATION_ICON_GAP)) | 0);
-    if (showNotifications && maxIcons > 0) {
-      const { icons, stale } = readActiveNotificationIcons(maxIcons, renderPassAllowsStaleData());
-      if (stale) noteStaleDataUsed();
-      const iconY = placeY(height - PAD - NOTIFICATION_ICON_SIZE, NOTIFICATION_ICON_SIZE);
-      for (let index = 0; index < icons.length; index++) {
-        image.drawImage(icons[index]!, placeX(PAD + index * (NOTIFICATION_ICON_SIZE + NOTIFICATION_ICON_GAP), NOTIFICATION_ICON_SIZE), iconY);
+    // Centre: the big stacked matrix clock, hours over minutes. The largest
+    // raster that fits between the edges (and the side blocks sharing the
+    // clock's rows) wins; a card too small for any raster draws the time as
+    // plain large text instead.
+    if (systemCardShowTimeSetting.get()) {
+      const { hours, minutes } = clockTimeParts(now);
+      const clockTop = PAD + (systemCardShowDateSetting.get() ? medium.lineHeight + TIMERS_GAP : 0);
+      // With the vertical flip the bottom row moved to the top, so the
+      // clock's free band is measured from under it instead of above it.
+      const roomTop = flipY ? PAD + bottomRowHeight + TIMERS_GAP : clockTop;
+      const roomBottom = flipY ? height - PAD : bottomTop - TIMERS_GAP;
+      const roomRows = roomBottom - roomTop;
+      const clockSpan = span(roomTop, roomBottom);
+      const roomCols = clockSpan.right - clockSpan.left;
+      // Biggest first: the 240px raster at 1:1 matches the approved full-lens
+      // preview; smaller canvases step down through the 96px and 48px rasters.
+      let chosen: { font: MatrixFont; scale: number; blockH: number } | null = null;
+      for (const asset of [MATRIX_FONT_240, MATRIX_FONT_96, MATRIX_FONT_48] as const) {
+        const font = loadMatrixFont(asset);
+        if (!font) continue;
+        const blockH = font.cellH * 2 + Math.max(2, Math.round(font.cellH * CLOCK_LINE_GAP_FRACTION));
+        if (blockH <= roomRows && measureMatrixText(font, hours) <= roomCols) {
+          chosen = { font, scale: 1, blockH };
+          break;
+        }
       }
+      if (chosen) {
+        const { font, scale, blockH } = chosen;
+        const digitH = font.cellH * scale;
+        const gap = blockH - digitH * 2;
+        const blockW = measureMatrixText(font, hours, scale);
+        const top = Math.max(roomTop, (height - blockH) >> 1);
+        const left = Math.max(clockSpan.left, ((clockSpan.left + clockSpan.right) / 2 - blockW / 2) | 0);
+        drawMatrixText(image, font, left, top, hours, 235, scale);
+        drawMatrixText(image, font, left, top + digitH + gap, minutes, 235, scale);
+      } else {
+        const large = glanceFont.large();
+        const timeText = formatClockTime(now);
+        const top = Math.max(roomTop, ((roomTop + roomBottom) / 2 - large.lineHeight / 2) | 0);
+        const { left, right } = span(top, top + large.lineHeight);
+        image.drawText(large, ((left + right) / 2 - large.measureText(timeText) / 2) | 0, top, timeText, 235);
+      }
+    }
+
+    // The band under the clock: running timers, soonest first.
+    const bandTop = PAD + (systemCardShowDateSetting.get() ? medium.lineHeight + TIMERS_GAP : 0);
+    const bandBottom = bottomTop - TIMERS_GAP;
+    if (bandBottom > bandTop) {
+      drawTimers(image, small, {
+        top: placeY(bandTop, bandBottom - bandTop),
+        height: bandBottom - bandTop,
+        fromBottom: flipY,
+        alignRight: flipX,
+        span,
+      }, now.getTime());
+    }
+
+    // Bottom left: the OpenClaw bridge's link state. A sharp-cornered square
+    // (never rounded, so it reads as a status lamp, not a button): filled
+    // while connected, hollow when the link is down, hollow with a centre dot
+    // while redialing.
+    if (showLink) {
+      const phase = assistantBridge.state().phase;
+      const rowY = placeY(bottomTop, bottomRowHeight);
+      const squareY = rowY + (((bottomRowHeight - LINK_SQUARE) / 2) | 0);
+      const down = phase === "failed" || phase === "idle";
+      const value = phase === "failed" ? 255 : phase === "idle" ? 120 : 170;
+      const squareX = placeX(PAD, LINK_SQUARE);
+      if (phase === "connected") image.fillRect(squareX, squareY, LINK_SQUARE, LINK_SQUARE, value);
+      else {
+        image.drawRect(squareX, squareY, LINK_SQUARE, LINK_SQUARE, value);
+        if (phase === "connecting") {
+          image.fillRect(squareX + (LINK_SQUARE >> 1) - 1, squareY + (LINK_SQUARE >> 1) - 1, 2, 2, value);
+        }
+      }
+      const labelX = flipX ? squareX - small.measureText(linkStatusLabel(phase)) - LINK_SQUARE : squareX + LINK_SQUARE + 4;
+      image.drawText(small, labelX, rowY, linkStatusLabel(phase), value);
+    }
+
+    // Bottom right: active notifications as a bell + count, the bell centred
+    // on the counter's text line.
+    if (showNotifications) {
+      const { icons, stale } = readActiveNotificationIcons(ALL_NOTIFICATIONS, renderPassAllowsStaleData());
+      if (stale) noteStaleDataUsed();
+      const countText = String(icons.length);
+      const bellValue = icons.length > 0 ? 230 : 90;
+      const rowY = placeY(bottomTop, bottomRowHeight);
+      const textWidth = small.measureText(countText);
+      const groupWidth = BELL_ICON.width + BELL_COUNT_GAP + textWidth;
+      const groupX = placeX(width - PAD - groupWidth, groupWidth);
+      drawBell(image, groupX, rowY + (((bottomRowHeight - BELL_ICON.height) / 2) | 0), bellValue);
+      image.drawText(small, groupX + BELL_ICON.width + BELL_COUNT_GAP, rowY, countText, bellValue);
+    }
+  }
+}
+
+/** Draw the tall-outline bell at (x, top) in `value`, pixel by pixel. */
+function drawBell(image: GrayImage, x: number, top: number, value: number): void {
+  for (let row = 0; row < BELL_ART.length; row++) {
+    const line = BELL_ART[row]!;
+    for (let col = 0; col < line.length; col++) {
+      if (line[col] === "#") image.fillRect(x + col, top + row, 1, 1, value);
     }
   }
 }
