@@ -30,8 +30,7 @@
  *     npx tsc -p tests/tsconfig.json
  *     node tools/system-card-preview.cjs [--out DIR]
  *
- * Writes one PNG per variant plus preview.html (lens view + a mock of the
- * glasses, green-tinted like a worn display).
+ * Writes one green-tinted lens PNG per state plus preview.html (screens only).
  */
 
 const fs = require("node:fs");
@@ -78,7 +77,6 @@ const H = G2_LENS_HEIGHT;
 const PAD = 8; // matches the shipping card's PAD
 
 const large = getTerminusFont(32, false);
-const largeBold = getTerminusFont(32, true);
 const medium = getTerminusFont(24, false);
 const small = getTerminusFont(16, false);
 
@@ -170,50 +168,44 @@ function drawTopRow(image, now) {
   drawBatteryBlock(image, W - PAD, PAD + 7);
 }
 
-// --- variants ----------------------------------------------------------------
+// --- the clock: stock-style big pixel digits, hours stacked over minutes ----
 
-function variantA(now, opts) {
-  const image = new GrayImage(W, H, 0);
-  drawTopRow(image, now);
-  const time = formatClockTime(now);
-  const tw = large.measureText(time);
-  const th = large.lineHeight;
-  image.drawText(large, Math.round((W - tw) / 2), Math.round((H - th) / 2), time, 235);
-  drawConnection(image, opts.connection, H - PAD);
-  drawNotificationCounter(image, opts.notifications, H - PAD);
-  return image;
-}
-
-function variantB(now, opts) {
-  const image = new GrayImage(W, H, 0);
-  drawTopRow(image, now);
-  const time = formatClockTime(now);
-  const tw = largeBold.measureText(time);
-  const th = largeBold.lineHeight;
-  const y = Math.round((H - th) / 2) - 14;
-  image.drawText(largeBold, Math.round((W - tw) / 2), y, time, 235);
-  image.drawText(medium, Math.round((W - medium.measureText("пн")) / 2), y + th + 6, "пн", 140);
-  drawConnection(image, opts.connection, H - PAD);
-  drawNotificationCounter(image, opts.notifications, H - PAD);
-  return image;
-}
-
-function variantC(now, opts) {
-  const image = new GrayImage(W, H, 0);
-  drawTopRow(image, now);
-  const time = formatClockTime(now);
-  const scale = 2;
-  const glyph = new GrayImage(large.measureText(time), large.lineHeight, 0);
-  glyph.drawText(large, 0, 0, time, 235);
+/**
+ * Draw `text` with the Terminus 32 glyphs nearest-neighbour scaled by
+ * `scale` (chunky pixels, like the stock G2 clock), centered horizontally at
+ * `centerY`. Terminus is 1bpp, so scaling stays crisp at any integer factor.
+ */
+function drawBigDigits(image, text, scale, centerY, value) {
+  const glyph = new GrayImage(large.measureText(text), large.lineHeight, 0);
+  glyph.drawText(large, 0, 0, text, value);
   const baked = glyph.withDrawsBaked();
-  const tw = baked.width * scale;
-  const x0 = Math.round((W - tw) / 2);
-  const y0 = Math.round((H - baked.height * scale) / 2);
+  const x0 = Math.round((W - baked.width * scale) / 2);
+  const y0 = Math.round(centerY - (baked.height * scale) / 2);
   for (let y = 0; y < baked.height; y++)
     for (let x = 0; x < baked.width; x++) {
       const v = baked.pixels[y * baked.width + x];
       if (v) image.fillRect(x0 + x * scale, y0 + y * scale, scale, scale, v);
     }
+}
+
+// --- the card -----------------------------------------------------------------
+
+/**
+ * One card: date top-left, untouched battery top-right, HH over MM big in the
+ * middle, OpenClaw link bottom-left, notification bell bottom-right.
+ */
+function drawCard(now, opts) {
+  const image = new GrayImage(W, H, 0);
+  drawTopRow(image, now);
+  const time = formatClockTime(now);
+  const [hh, mm] = time.split(":");
+  const scale = opts.scale ?? 3;
+  const lineGap = Math.round(large.lineHeight * scale * 0.18);
+  const blockH = large.lineHeight * scale * 2 + lineGap;
+  const hourCenter = Math.round(H / 2 - blockH / 4);
+  const minuteCenter = Math.round(H / 2 + blockH / 4);
+  drawBigDigits(image, hh.padStart(2, "0"), scale, hourCenter, 235);
+  drawBigDigits(image, mm.padStart(2, "0"), scale, minuteCenter, 235);
   drawConnection(image, opts.connection, H - PAD);
   drawNotificationCounter(image, opts.notifications, H - PAD);
   return image;
@@ -221,6 +213,10 @@ function variantC(now, opts) {
 
 // --- PNG + HTML out -----------------------------------------------------------
 
+/**
+ * The G2's microLED panel is green monochrome; this approximates the worn
+ * look by pushing luminance toward phosphor green.
+ */
 function greenTint(rgba) {
   // Even-style worn look: keep luminance, push toward phosphor green.
   for (let i = 0; i < rgba.length; i += 4) {
@@ -231,14 +227,14 @@ function greenTint(rgba) {
   }
 }
 
-function writePng(name, image, tint) {
+function writePng(name, image) {
   const baked = image.withDrawsBaked();
   const rgba = new Uint8Array(baked.width * baked.height * 4);
   for (let i = 0; i < baked.pixels.length; i += 1) {
     rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = baked.pixels[i];
     rgba[i * 4 + 3] = 255;
   }
-  if (tint) greenTint(rgba);
+  greenTint(rgba);
   const file = path.join(OUT, `${name}.png`);
   fs.writeFileSync(file, Buffer.from(UPNG.encode([rgba.buffer], baked.width, baked.height, 0)));
   let lit = 0;
@@ -249,23 +245,17 @@ function writePng(name, image, tint) {
 
 const now = new Date();
 const variants = [
-  { name: "A-connected", variant: variantA, opts: { connection: "ok", notifications: 3 } },
-  { name: "B-connected", variant: variantB, opts: { connection: "ok", notifications: 3 } },
-  { name: "C-connected", variant: variantC, opts: { connection: "ok", notifications: 3 } },
-  { name: "A-disconnected", variant: variantA, opts: { connection: "down", notifications: 0 } },
-  { name: "A-reconnecting", variant: variantA, opts: { connection: "reconnecting", notifications: 12 } },
+  { name: "connected", opts: { connection: "ok", notifications: 3, scale: 3 } },
+  { name: "disconnected", opts: { connection: "down", notifications: 0, scale: 3 } },
+  { name: "reconnecting", opts: { connection: "reconnecting", notifications: 12, scale: 3 } },
 ];
 
 const written = [];
 for (const spec of variants) {
-  const image = spec.variant(now, spec.opts);
-  const gray = writePng(`${spec.name}-gray`, image, false);
-  const green = writePng(`${spec.name}-green`, image, true);
-  written.push({ ...spec, gray, green });
+  const image = drawCard(now, spec.opts);
+  const png = writePng(spec.name, image);
+  written.push({ ...spec, png });
 }
-
-const glassesPng = path.join(APP, "images/glasses/glasses_g2_a_green.png");
-const glassesB64 = fs.existsSync(glassesPng) ? fs.readFileSync(glassesPng).toString("base64") : null;
 
 const html = `<!doctype html>
 <meta charset="utf-8">
@@ -275,24 +265,16 @@ const html = `<!doctype html>
  h1{font-size:18px} h2{font-size:15px;color:#9c9;margin-top:34px}
  .note{color:#888;max-width:760px}
  .lens{width:640px;height:480px;background:#000;border:1px solid #333;margin:10px 0}
- .glasses{position:relative;width:600px;margin:10px 0}
- .glasses img.frame{width:600px;display:block}
- .glasses .screen{position:absolute;left:26.5%;top:22%;width:47%;height:56%;object-fit:fill;mix-blend-mode:screen;filter:brightness(1.6)}
- .row{display:flex;gap:24px;flex-wrap:wrap}
 </style>
-<h1>System Card — предлагаемый макет (640×480, рисунки — настоящим прикладным кодом)</h1>
-<p class="note">Шрифт — Terminus (офлайн-фолбэк приложения, не TTF-дефолт и не прошивочный шрифт стокового часов).
-Батарея справа сверху — настоящая отрисовка из graphics/battery.ts, без изменений.
-Время по центру — Terminus 32; «стиль стоковых часов» здесь означает композицию (крупное время по центру), глифы стокового шрифта из прошивки офлайн недоступны.</p>
+<h1>System Card — редизайн (640×480, отрисовано настоящим прикладным кодом)</h1>
+<p class="note">Время — Terminus 32, увеличенный втрое побитово (1bpp-глифы, масштаб без размытия): крупные пиксельные цифры, часы над минутами, как в стоковых часах G2.
+Батарея справа сверху — настоящая отрисовка из graphics/battery.ts, без изменений.</p>
 ${written
   .map(
     (w) => `<h2>${w.name}</h2>
-<div class="row">
-<div><div class="lens"><img src="${w.green}" width="640" height="480"></div><div class="note">линза (зелёный тон как на надетых очках)</div></div>
-<div class="glasses"><img class="frame" src="data:image/png;base64,${glassesB64}"><img class="screen" src="${w.green}"></div>
-</div>`,
+<div class="lens"><img src="${w.png}" width="640" height="480"></div>`,
   )
   .join("\n")}
 `;
 fs.writeFileSync(path.join(OUT, "preview.html"), html);
-console.log(`wrote ${written.length * 2} PNGs + preview.html to ${OUT}`);
+console.log(`wrote ${written.length} PNGs + preview.html to ${OUT}`);
