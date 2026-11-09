@@ -352,6 +352,18 @@ verbatim as action `other`, no classification, no re-ask). Suite 1172/0.
 Reminder acceptance passed on-device for the single-popup cycle (done ->
 TickTick complete; "через 10 минут" -> due date moved).
 
+`dist/Faceclaw-0.8.7-local-816.apk` (95,850,005 bytes, SHA-256
+`5497123b7d341eb24c9113b4b161f9b7fb23dad0a9b7681499e9ef00e15651b6`) replaces the
+Glanceboard System Card with the approved stock-G2 clock face: stacked
+dot-matrix time (DisplayOTF rasters shipped as `app/fonts/displayotf/*.json`,
+240px drawn 1:1 on the full-lens card), RU `dd.mm.yy` date top left, battery
+block untouched top right, OpenClaw link square bottom left (filled = ok,
+hollow = down, hollow+dot = redialing; RU label), notification bell + count
+bottom right. New `app/apps/glanceboard/matrix-font.ts` loader, new
+`tests/system-card.test.cjs`; suite 1178/0. (815 was built and discarded: its
+JSONs sat under `app/apps/`, which webpack does not copy — only `assets/**`
+and `fonts/**` ship.)
+
 No GitHub Release was created and no APK was uploaded anywhere.
 
 ## Unfinished work — do this next
@@ -364,9 +376,10 @@ No GitHub Release was created and no APK was uploaded anywhere.
    (TickTick official MCP + OpenClaw script payload + courier protocol; see its
    README for setup). Deployed and accepted through APK 812; v2 policy (grouped
    popups, fixed 5m retry, courier-authored wording, REMINDER_EVENT v2) needs
-   APK 814 + the regenerated payload + the new AGENTS.reminder.md block on the
-   OpenClaw host. Next: install 814, redeploy payload, run the grouped-popup
-   acceptance from the nano_assistant README.
+   APK 814+ + the regenerated payload + the new AGENTS.reminder.md block on the
+   OpenClaw host. Next: install 816 (814 + the redesigned System Card clock
+   face), redeploy payload, run the grouped-popup acceptance from the
+   nano_assistant README.
 1. If a phone is connected, inspect the actually installed APK before installation
    (Linux equivalent of `scripts/inspect-installed-android.ps1`: `adb shell pm path com.faceclaw.app`,
    `adb pull`, then `aapt dump badging` + `apksigner verify --print-certs`). The reference APK/key
