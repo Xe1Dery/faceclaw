@@ -103,6 +103,14 @@ const NOW = args.time
     })()
   : new Date();
 
+/** The widget reads the wall clock itself (paint() calls new Date()), so
+ * --time can only work by handing the widget's vm a frozen Date: every
+ * `new Date()` inside the transpiled widget lands on NOW. */
+class FrozenDate extends Date {
+  constructor() { super(NOW.getTime()); }
+  static now() { return NOW.getTime(); }
+}
+
 // --- the real widget, loaded through the test harness --------------------------
 
 /** Transpile a real app .ts file and run it with injected dependencies. */
@@ -200,7 +208,7 @@ const systemCard = load("app/apps/glanceboard/widgets/system-card.ts", {
     glanceFont: { small: () => getFont("terminus12"), medium: () => getFont("terminus16"), large: () => getFont("terminus24") },
   },
   "../widget": {},
-});
+}, { Date: FrozenDate });
 
 /** Paint the real widget onto a fresh canvas, as board.ts does per region. */
 function paintSlot(width, height) {

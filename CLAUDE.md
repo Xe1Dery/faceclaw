@@ -47,3 +47,57 @@ firmware patch-set in app/g2/firmware/cfw-patches.ts. Strongly prefer making
 changes to the Android app over making changes to changes to the firmware, as
 firmware development is considerably more fraught.
 
+## Working on the interface (learned the hard way, 2026-11)
+
+**Confirm before applying.** Any change to what the user SEES on the glasses
+(layout, fonts, sizes, colors, blocks shown/hidden) must be shown as a
+preview/mockup and explicitly confirmed by the user BEFORE editing shipping
+widget code. The preview tool below exists for exactly this.
+
+Glanceboard geometry (what a widget actually gets):
+- A widget never sees the lens. board.ts paints each widget into its SLOT
+  canvas — 288x144 in the 2x2 layout (QUADRANT_LAYOUT, board 576x288; the
+  2x3 SIX_SLOT_LAYOUT board is 576x432). The system card never spans; only
+  calendar/terminal do.
+- glance-host.ts centres the board on the 640x480 lens: x=(640-w)/2=32,
+  y=minWindowTop() (78 with the bottom switcher: 36px row).
+- The composed board is dimmed x0.95 before it reaches the lens — a clock
+  drawn at value 235 lands at 223 in preview PNGs. Account for that when
+  probing pixels.
+- DIVIDER_VALUE=20 hairlines between slots (board.ts).
+
+DisplayOTF (the System Card clock):
+- It is a LOGICAL 6x9 dot matrix. Small rasterizations (48/96px) come out
+  UNEVEN — the rasterizer merges dots into bars — so never ship or trust
+  small rasters of it. The card draws from the sampled logical grid
+  (app/fonts/displayotf/displayotf-grid.json, regenerate with
+  tools/assets/extract-displayotf-font.py; verify against a 240px
+  rasterization, which is clean: pitch 19, dots 16, gap 3).
+- matrix-font.ts draws each lit cell as a square dot of
+  pitch - max(1, round(pitch/6)) with a visible gap, at the biggest pitch
+  that fits — uniform dots at any size.
+
+Text on the card / preview fidelity:
+- On-device default UI font is Roboto-Light TTF (Java rasterizer); the
+  offline preview CANNOT rasterize TTF and uses the Terminus .bdf fallback
+  (small=12, medium=16, large=24). Glyph shapes differ slightly, metrics
+  close. The weather SVG icon likewise only rasterizes on-device.
+- GrayImage: drawText DEFERS glyphs (baked at withDrawsBaked; composeInto
+  carries them), fillRect/drawRect/bitBlt are immediate. drawRect is
+  outline-only (4 lines).
+
+Build/packaging trap:
+- NativeScript webpack ships only `assets/**`, `fonts/**` and `**/*.+(jpg|png)`
+  from app/. Any other non-TS file under app/ silently does NOT ship (this
+  killed build 815). JSON font assets must live under app/fonts/.
+
+Preview tool (tools/system-card-preview.cjs):
+- Renders the REAL widget (same vm+transpile harness as
+  tests/system-card.test.cjs — run `npx tsc -p tests/tsconfig.json` first)
+  at the REAL slot geometry, composed and placed like board.ts/glance-host.
+- Flags: --out --notifications --layout 2x2|2x3 --slot N --time HH:MM
+  --lines --y. --time works by injecting a frozen Date into the widget's vm
+  globals (paint() calls new Date() itself — a plain NOW constant in the
+  tool does NOT reach the widget).
+- The OpenClaw link square must stay sharp-cornered (never rounded): filled
+  = connected, hollow+centre dot = redialing, hollow bright = down.
