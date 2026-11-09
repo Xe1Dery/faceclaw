@@ -1,10 +1,11 @@
 import { GrayImage } from "../../graphics/image";
 import { screenWidth } from "../../graphics/screen-size";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { minWindowTop } from "./geometry";
+import { minWindowTop, screenHeight, SHELL_OPAQUE_BLACK } from "./geometry";
+import { startSlideIn } from "./popup-slide";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { classifyReminderAnswer } from "../../assistant/reminder-intents";
-import { type InputEvent } from "../gestures";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, type InputEvent } from "../gestures";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
 
 /**
@@ -62,6 +63,12 @@ export class ReminderLayer implements Layer {
   private confirmTimer: ReturnType<typeof setTimeout> | null = null;
   /** The outcome shown in the confirmation phase (kept for the test hooks). */
   private shownAction = "";
+  /** Locked-glasses presentation (spec 4): the frame arrives alone, the
+   * interface is not raised behind it. */
+  private readonly standalone: boolean;
+  /** Slide-in progress 0..1 for the unlocked presentation; 1 = at rest. */
+  private slide = 1;
+  private cancelSlide: (() => void) | null = null;
 
   constructor(
     private readonly request: ReminderRequest,
@@ -78,20 +85,36 @@ export class ReminderLayer implements Layer {
      * text or null when the bar closed without sending.
      */
     private readonly delegateAnswer?: (onDone: (text: string | null) => void) => boolean,
+    /** Presentation choice from the shell, made at push time. */
+    options: { standalone?: boolean } = {},
   ) {
     this.armTtl();
+    this.standalone = options.standalone ?? false;
+    if (!this.standalone) {
+      this.slide = 0;
+      this.cancelSlide = startSlideIn(this.actions, (offset) => {
+        this.slide = 1 - offset;
+      });
+    }
   }
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
-    const image = paintBelow();
+    // Standalone (locked glasses): an opaque canvas of its own, so the
+    // interface below stays down and only the frame shows (spec 4).
+    const image = this.standalone
+      ? new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK)
+      : paintBelow();
     const font = getDefaultSmallFont();
     const x = 32;
     const width = screenWidth() - 64;
-    const y = minWindowTop() + 80;
     const height = 128;
+    const rest = this.standalone ? Math.round((screenHeight() - height) / 2) : minWindowTop() + 80;
+    // Unlocked frames slide up from the screen's bottom edge to their rest
+    // place (spec 4); standalone ones simply appear with the brightness rise.
+    const y = Math.round(rest + (1 - this.slide) * (screenHeight() - height - rest));
     image.fillRect(x, y, width, height, 1);
     image.drawRect(x, y, width, height, 90);
-    image.drawText(font, x + 14, y + 10, "Reminder", 200);
+    image.drawText(font, x + 14, y + 10, "Напоминание", 200);
     image.drawTextWrapped({
       font,
       x: x + 14,
@@ -122,11 +145,11 @@ export class ReminderLayer implements Layer {
     switch (this.phase) {
       case "waiting":
         if (this.delegated) return "Слушаю...";
-        return this.detail || "Tap to answer · Double-tap to dismiss";
+        return this.detail || `${GESTURE_CLICK} ответить   ${GESTURE_DOUBLE_CLICK} пропустить`;
       case "capturing":
-        return "Listening... Tap when done";
+        return "Слушаю... Тап - конец";
       case "finishing":
-        return "Working...";
+        return "Работаю...";
       case "answered":
         return this.shownAction;
       case "reask":
@@ -168,6 +191,8 @@ export class ReminderLayer implements Layer {
   onRemoved(): void {
     // Removed by the shell (screen sleep, clear-to-base) before resolving:
     // that counts as no answer, never as a completion.
+    this.cancelSlide?.();
+    this.cancelSlide = null;
     if (this.capturing()) this.stopMic();
     this.settle({ action: "expired" });
     this.clearAllTimers();

@@ -1,5 +1,5 @@
-import { type GrayImage } from "../../graphics/image";
-import { screenWidth } from "../../graphics/screen-size";
+import { GrayImage } from "../../graphics/image";
+import { screenHeight, screenWidth } from "../../graphics/screen-size";
 import { getDefaultSmallFont, getDefaultMediumFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
@@ -68,6 +68,9 @@ export type DictationBarOptions = {
   onDone: (outcome: DictationOutcome) => void;
   /** Auto-send after the phrase finalizes (the skip-confirmation setting). */
   autoSend?: boolean;
+  /** Locked-glasses presentation (spec 2): the bar arrives with the screen's
+   * brightness transition, the interface is not raised behind it. */
+  standalone?: boolean;
 };
 
 export class DictationBarLayer implements Layer {
@@ -96,6 +99,7 @@ export class DictationBarLayer implements Layer {
   private readonly dismiss: () => void;
   private readonly onDone: (outcome: DictationOutcome) => void;
   private readonly autoSend: boolean;
+  private readonly standalone: boolean;
 
   constructor(options: DictationBarOptions) {
     this.actions = options.actions;
@@ -103,6 +107,7 @@ export class DictationBarLayer implements Layer {
     this.dismiss = options.dismiss;
     this.onDone = options.onDone;
     this.autoSend = options.autoSend ?? false;
+    this.standalone = options.standalone ?? false;
   }
 
   /** Shell: the bar is on screen — start the mic immediately (hands-free). */
@@ -128,7 +133,11 @@ export class DictationBarLayer implements Layer {
   }
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
-    const image = paintBelow();
+    // Standalone (locked glasses): an opaque canvas of its own, so the
+    // interface stays down and only the bar shows (spec 2, mockup 11).
+    const image = this.standalone
+      ? new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK)
+      : paintBelow();
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
     const x = 32;
@@ -137,7 +146,9 @@ export class DictationBarLayer implements Layer {
     const hintShown = this.phase === "finalized";
     const height =
       BAR_LINE_BASE + Math.max(0, lines.length - 1) * BAR_LINE_STEP + (hintShown ? HINT_BLOCK : 0);
-    const y = this.interfaceBottom() - height;
+    // With no interface raised there is no band to anchor to: the bar sits
+    // on the screen's own bottom edge.
+    const y = (this.standalone ? screenHeight() : this.interfaceBottom()) - height;
     // Opaque: the bar is the interface's lowest element and covers what is
     // under it (the switcher row must not peek out from below it).
     image.fillRect(x, y, width, height, SHELL_OPAQUE_BLACK);
@@ -433,16 +444,20 @@ export class DictationRefusalLayer implements Layer {
     private readonly interfaceBottom: () => number,
     private readonly dismiss: () => void,
     private readonly label = "Нет связи с OpenClaw",
+    /** Locked glasses: the frame arrives alone, on the screen's bottom edge. */
+    private readonly standalone = false,
   ) {
     this.timer = setTimeout(() => this.dismiss(), NO_LINK_MS);
   }
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
-    const image = paintBelow();
+    const image = this.standalone
+      ? new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK)
+      : paintBelow();
     const medium = getDefaultMediumFont();
     const x = 32;
     const width = screenWidth() - 64;
-    const y = this.interfaceBottom() - BAR_LINE_BASE;
+    const y = (this.standalone ? screenHeight() : this.interfaceBottom()) - BAR_LINE_BASE;
     image.fillRect(x, y, width, BAR_LINE_BASE, SHELL_OPAQUE_BLACK);
     image.drawRect(x, y, width, BAR_LINE_BASE, 90);
     drawMicGlyph(image, x + 12, y + 10, MIC_SIZE, 60);

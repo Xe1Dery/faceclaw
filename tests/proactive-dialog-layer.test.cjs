@@ -20,8 +20,11 @@ function layerEnv() {
     clearTimeout(id) { timers.delete(id); },
   }, {
     '../../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
+    '../../graphics/image': { GrayImage: class { constructor(w, h, v) { this.width = w; this.height = h; this.value = v; this.ops = []; }
+      fillRect(...a) { this.ops.push({ op: 'fillRect', a }); } drawRect(...a) { this.ops.push({ op: 'drawRect', a }); }
+      drawLine() {} drawText(_f, _x, _y, text, value) { this.ops.push({ op: 'text', text, value }); } drawTextWrapped({ text }) { this.ops.push({ op: 'text', text }); } } },
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({ lineHeight: 12, ascent: 9 }) },
-    './geometry': { minWindowTop: () => 40 },
+    './geometry': { minWindowTop: () => 40, screenHeight: () => 480, screenWidth: () => 640, SHELL_OPAQUE_BLACK: 1 },
     '../../native/voice-control': {
       voiceControlBridge: {
         onTranscript(listener) { transcriptListeners.add(listener); return () => transcriptListeners.delete(listener); },
@@ -220,4 +223,24 @@ test('a delegated question does not expire while the bar is answering', () => {
   assert.equal(outcomes.length, 0);
   onDone('разобрать позже');
   assert.equal(outcomes[0].action, 'answered');
+});
+
+test('a locked-glasses question paints standalone with the OpenClaw header', () => {
+  const env = layerEnv();
+  const outcomes = [];
+  const layer = new env.mod.ProactiveDialogLayer(
+    { text: 'Перенести на 21:00?', ttlMs: 45_000 },
+    env.actions,
+    () => false,
+    () => {},
+    (outcome) => outcomes.push(outcome),
+    undefined,
+    { standalone: true },
+  );
+  let belowAsked = false;
+  const image = layer.paint({}, () => { belowAsked = true; return null; });
+  assert.equal(belowAsked, false, 'the interface stays down behind the frame');
+  assert.ok(image.ops.some((o) => (o.text ?? '') === 'OpenClaw'), 'named OpenClaw, never Assistant');
+  const frame = image.ops.find((o) => o.op === 'fillRect');
+  assert.equal(frame.a[1], Math.round((480 - 128) / 2), 'centered on the screen');
 });

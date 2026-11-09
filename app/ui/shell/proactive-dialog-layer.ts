@@ -1,7 +1,8 @@
-import { type GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { screenWidth } from "../../graphics/screen-size";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { minWindowTop } from "./geometry";
+import { minWindowTop, screenHeight, SHELL_OPAQUE_BLACK } from "./geometry";
+import { startSlideIn } from "./popup-slide";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { type InputEvent } from "../gestures";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
@@ -45,6 +46,12 @@ export class ProactiveDialogLayer implements Layer {
   private resolved = false;
   /** The answer was delegated to the dictation bar, not this layer's own mic. */
   private delegated = false;
+  /** Locked-glasses presentation (spec 4): the frame arrives alone, the
+   * interface is not raised behind it. */
+  private readonly standalone: boolean;
+  /** Slide-in progress 0..1 for the unlocked presentation; 1 = at rest. */
+  private slide = 1;
+  private cancelSlide: (() => void) | null = null;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeSpeechEnd: (() => void) | null = null;
   private ttlTimer: ReturnType<typeof setTimeout> | null = null;
@@ -66,10 +73,19 @@ export class ProactiveDialogLayer implements Layer {
      * text or null when the bar closed without sending.
      */
     private readonly delegateAnswer?: (onDone: (text: string | null) => void) => boolean,
+    /** Presentation choice from the shell, made at push time (spec 4). */
+    options: { standalone?: boolean } = {},
   ) {
     // The ttl covers the waiting phase: an unanswered prompt (no tap) closes
     // on its own. Once the wearer taps, the capture's own hard cap times it.
     this.armTtl();
+    this.standalone = options.standalone ?? false;
+    if (!this.standalone) {
+      this.slide = 0;
+      this.cancelSlide = startSlideIn(this.actions, (offset) => {
+        this.slide = 1 - offset;
+      });
+    }
   }
 
   private armTtl(): void {
@@ -77,15 +93,21 @@ export class ProactiveDialogLayer implements Layer {
   }
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
-    const image = paintBelow();
+    // Standalone (locked glasses): an opaque canvas of its own, so the
+    // interface below stays down and only the frame shows (spec 4).
+    const image = this.standalone
+      ? new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK)
+      : paintBelow();
     const font = getDefaultSmallFont();
     const x = 32;
     const width = screenWidth() - 64;
-    const y = minWindowTop() + 80;
     const height = 128;
+    const rest = this.standalone ? Math.round((screenHeight() - height) / 2) : minWindowTop() + 80;
+    // Unlocked frames slide up from the screen's bottom edge (spec 4).
+    const y = Math.round(rest + (1 - this.slide) * (screenHeight() - height - rest));
     image.fillRect(x, y, width, height, 1);
     image.drawRect(x, y, width, height, 90);
-    image.drawText(font, x + 14, y + 10, "Assistant", 200);
+    image.drawText(font, x + 14, y + 10, "OpenClaw", 200);
     image.drawTextWrapped({
       font,
       x: x + 14,

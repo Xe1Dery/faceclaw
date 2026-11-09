@@ -21,7 +21,10 @@ function layerEnv() {
   }, {
     '../../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({ lineHeight: 12, ascent: 9 }) },
-    './geometry': { minWindowTop: () => 40 },
+    '../../graphics/image': { GrayImage: class { constructor(w, h, v) { this.width = w; this.height = h; this.value = v; this.ops = []; }
+      fillRect(...a) { this.ops.push({ op: 'fillRect', a }); } drawRect(...a) { this.ops.push({ op: 'drawRect', a }); }
+      drawLine() {} drawText() {} drawTextWrapped() {} } },
+    './geometry': { minWindowTop: () => 40, screenHeight: () => 480, screenWidth: () => 640, SHELL_OPAQUE_BLACK: 1 },
     '../../native/voice-control': {
       voiceControlBridge: {
         onTranscript(listener) { transcriptListeners.add(listener); return () => transcriptListeners.delete(listener); },
@@ -43,7 +46,20 @@ function layerEnv() {
   function fireSpeechEnd() {
     for (const listener of [...speechEndListeners]) listener();
   }
-  return { mod, actions, advance, emitTranscript, fireSpeechEnd, timers };
+  /** Paint and return the recorded ops (a fresh stub canvas per call). */
+  function paint(layer) {
+    const image = { ops: [], fillRect(...a) { this.ops.push({ op: 'fillRect', a }); },
+      drawRect(...a) { this.ops.push({ op: 'drawRect', a }); }, drawLine() {}, drawText() {}, drawTextWrapped() {} };
+    layer.paint({}, () => image);
+    return image.ops;
+  }
+  /** Paint a standalone frame: paintBelow must never be asked. */
+  function paintStandalone(layer) {
+    let belowAsked = false;
+    const image = layer.paint({}, () => { belowAsked = true; return null; });
+    return { image, belowAsked };
+  }
+  return { mod, actions, advance, emitTranscript, fireSpeechEnd, timers, paint, paintStandalone };
 }
 
 function openReminder(env, overrides = {}) {
@@ -295,4 +311,34 @@ test('a refused bar keeps the popup open with a busy note', () => {
   layer.handleInput(click);
   assert.equal(outcomes.length, 0); // still open, waiting
   assert.deepEqual(env.actions.starts, []);
+});
+
+test('an unlocked popup slides up from the screen bottom to its rest place', () => {
+  const env = layerEnv();
+  const { layer } = openReminder(env);
+  const start = env.paint(layer).find((o) => o.op === 'fillRect');
+  // Slide-in start: the frame hangs at the screen's bottom edge (480-128).
+  assert.equal(start.a[1], 480 - 128);
+  for (let i = 0; i < 8; i++) env.advance(30); // the slide settles within 180ms
+  const rest = env.paint(layer).find((o) => o.op === 'fillRect');
+  assert.equal(rest.a[1], 40 + 80); // minWindowTop + 80, the classic rest place
+});
+
+test('a locked-glasses popup paints standalone, centered, interface down', () => {
+  const env = layerEnv();
+  const outcomes = [];
+  const layer = new env.mod.ReminderLayer(
+    { reminderId: 'r1', text: 'Позвонить маме', ttlMs: 60_000 },
+    env.actions,
+    () => false,
+    () => {},
+    (outcome) => outcomes.push(outcome),
+    undefined,
+    { standalone: true },
+  );
+  const { image, belowAsked } = env.paintStandalone(layer);
+  assert.equal(belowAsked, false, 'paintBelow is never asked: the interface stays down');
+  assert.equal(image.value, 1, 'the canvas starts opaque black');
+  const frame = image.ops.find((o) => o.op === 'fillRect');
+  assert.equal(frame.a[1], Math.round((480 - 128) / 2), 'centered on the screen');
 });

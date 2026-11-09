@@ -1627,11 +1627,15 @@ class Shell {
       this.showAssistantNoLink();
       return false;
     }
-    if (!this.screenOn) this.wake("sidebar");
+    // Locked glasses: the bar arrives standalone over a dark screen, the
+    // interface is not raised behind it (spec 2, mockup 11).
+    const standalone = !this.screenOn;
+    if (standalone) this.wake("sidebar");
     const autoSend = options.autoSend ?? assistantSkipConfirmationSetting.get();
     const layer = new DictationBarLayer({
       actions: this.config.actions,
       interfaceBottom,
+      standalone,
       dismiss: () => {
         this.stack.popIfTop((top) => top === layer);
         this.config.requestShellRender();
@@ -1974,10 +1978,18 @@ class Shell {
   /** The no-link refusal frame (spec 2): the bar and the chat window both
    * refuse with this, in the bar's place. */
   private showAssistantNoLink(): void {
-    const refusal = new DictationRefusalLayer(this.config.actions, interfaceBottom, () => {
-      this.stack.popIfTop((top) => top === refusal);
-      this.config.requestShellRender();
-    });
+    const standalone = !this.screenOn;
+    if (standalone) this.wake("sidebar");
+    const refusal = new DictationRefusalLayer(
+      this.config.actions,
+      interfaceBottom,
+      () => {
+        this.stack.popIfTop((top) => top === refusal);
+        this.config.requestShellRender();
+      },
+      undefined,
+      standalone,
+    );
     this.stack.push(refusal);
     this.config.requestShellRender();
   }
@@ -2011,7 +2023,10 @@ class Shell {
   showReminder(request: ReminderRequest): Promise<ReminderOutcome> {
     const open = this.activeReminders.get(request.reminderId);
     if (open) return open.promise;
-    if (!this.screenOn) this.wake("sidebar");
+    // Locked glasses: the frame arrives standalone, without raising the
+    // interface behind it (spec 4). Decided before the wake.
+    const standalone = !this.screenOn;
+    if (standalone) this.wake("sidebar");
     let settlePromise: (outcome: ReminderOutcome) => void = () => {};
     const promise = new Promise<ReminderOutcome>((resolve) => {
       settlePromise = resolve;
@@ -2039,6 +2054,7 @@ class Shell {
         onSent: (text) => onDone(text),
         onClosed: () => onDone(null),
       }),
+      { standalone },
     );
     this.activeReminders.set(request.reminderId, { layer, promise });
     this.stack.push(layer);
@@ -2072,7 +2088,9 @@ class Shell {
     if (this.config.voiceInputEnabled === false) return null;
     if (this.activeProactiveDialog) return null;
     if (this.activeVoiceLayer || this.activeDictationBar || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()) return null;
-    if (!this.screenOn) this.wake("sidebar");
+    // Same locked/unlocked split as the reminder frame (spec 4).
+    const standalone = !this.screenOn;
+    if (standalone) this.wake("sidebar");
     let settlePromise: (outcome: ProactiveDialogOutcome) => void = () => {};
     const promise = new Promise<ProactiveDialogOutcome>((resolve) => {
       settlePromise = resolve;
@@ -2097,6 +2115,7 @@ class Shell {
         onSent: (text) => onDone(text),
         onClosed: () => onDone(null),
       }),
+      { standalone },
     );
     this.activeProactiveDialog = { layer, promise };
     this.stack.push(layer);

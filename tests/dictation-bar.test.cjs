@@ -30,6 +30,14 @@ function layerEnv(opts = {}) {
     Date: { now: () => now.ms },
   }, {
     '../../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
+    '../../graphics/image': { GrayImage: class {
+      constructor(w, h, v) { this.width = w; this.height = h; this.value = v; this.ops = []; }
+      fillRect(...a) { this.ops.push({ op: 'fillRect', a }); }
+      drawRect(...a) { this.ops.push({ op: 'drawRect', a }); }
+      drawLine(...a) { this.ops.push({ op: 'drawLine', a }); }
+      drawText(_f, x, y, text, value) { this.ops.push({ op: 'text', x, y, text, value }); }
+      drawTextWrapped({ text }) { this.ops.push({ op: 'text', text }); }
+    } },
     '../../graphics/ui-fonts': {
       getDefaultSmallFont: () => font(12),
       getDefaultMediumFont: () => font(16),
@@ -239,4 +247,26 @@ test('the no-link refusal paints the reason line at the interface bottom', () =>
   assert.equal(frame.a[1] + frame.a[3], 402);
   const text = ops.find((o) => o.op === 'text');
   assert.equal(text.text, 'Нет связи с OpenClaw');
+});
+
+test('the locked-glasses bar paints standalone on the screen bottom', () => {
+  const env = layerEnv();
+  const { layer } = env.openBar({ standalone: true });
+  layer.startCapture();
+  let belowAsked = false;
+  const image = layer.paint({}, () => { belowAsked = true; return null; });
+  assert.equal(belowAsked, false, 'the interface stays down behind the bar');
+  assert.equal(image.value, 1, 'the canvas starts opaque black');
+  const frame = image.ops.find((o) => o.op === 'fillRect');
+  assert.equal(frame.a[1] + frame.a[3], 480, 'anchored to the screen bottom, no band to ride');
+});
+
+test('the locked-glasses no-link refusal paints standalone too', () => {
+  const env = layerEnv();
+  const layer = new env.mod.DictationRefusalLayer(env.actions, () => 402, () => {}, undefined, true);
+  let belowAsked = false;
+  const image = layer.paint({}, () => { belowAsked = true; return null; });
+  assert.equal(belowAsked, false);
+  const frame = image.ops.find((o) => o.op === 'fillRect');
+  assert.equal(frame.a[1] + frame.a[3], 480);
 });
