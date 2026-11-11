@@ -10,6 +10,14 @@
  * most common answers are accepted too, since the recognizer sometimes emits
  * them for short words. Matching is on the *whole normalized utterance*, not a
  * substring: "сделано" inside a longer sentence is free text, not a command.
+ *
+ * The action set is deliberately narrow, one local action per unambiguous
+ * meaning: done, a relative snooze ("не сейчас", "через N минут"), and the
+ * postpone contract with the courier (tomorrow morning). Anything that changes
+ * the TickTick due date in a way the phone cannot pin to a time — "на вечер",
+ * "на выходных", "в пятницу" — is `other` with the raw text: the agent on the
+ * server owns those, and guessing here once turned "перенеси на вечер" into
+ * "завтра 09:00".
  */
 
 export type ReminderIntent = {
@@ -39,11 +47,18 @@ const NUM_WORDS: Record<string, number> = {
 const MINUTE_WORDS = new Set(["минут", "минута", "минуты", "мин", "мин.", "minute", "minutes", "min"]);
 const HOUR_WORDS = new Set(["час", "часа", "часов", "ч", "hour", "hours", "h"]);
 
-/** Exact whole-utterance matches for the fixed commands. */
+/** Exact whole-utterance matches for the fixed commands. TODAY_RE used to map
+ * here as postpone; it is gone on purpose — "на вечер" is a TickTick due-date
+ * change with an open question (which hour is evening?), not a postpone, and
+ * postpone's contract with the courier is tomorrow morning. */
 const DONE_RE = /^(сделано|сделал|сделала|готово|выполнено|закрыто|завершено|done)$/;
 const LATER_RE = /^(не\s*сейчас|позже|потом|не\s*могу\s*сейчас|не\s*удобно|later|not\s*now)$/;
 const TOMORROW_RE = /^(перенеси\s*на\s*завтра|на\s*завтра|завтра|утром\s*завтра|завтра\s*утром|отложи\s*на\s*завтра|postpone\s*tomorrow|to\s*tomorrow)$/;
-const TODAY_RE = /^(перенеси\s*на\s*вечер|на\s*вечер|вечером|перенеси\s*на\s*сегодня|на\s*сегодня|сегодня)$/;
+
+/** A bare interval answer: "через 10 минут", "на полчаса". */
+const BARE_INTERVAL_RE = /^(через|спустя|на)\s+/;
+/** A phrase naming the delay itself: "напомни через ...", "отложи на 2 часа". */
+const DELAY_VERB_RE = /(напомни|напомнить|отложи|отложить|перенеси|перенести|позже)/;
 
 /**
  * Normalize for matching: lowercase, ё→е, drop everything that is not a
@@ -62,9 +77,12 @@ export function normalizeUtterance(text: string): string {
 /**
  * Parse a duration out of a snooze phrase: digits or number-words, followed by
  * a minute/hour word (the word is required, so bare "5" is not a snooze).
- * Returns minutes, or null when the phrase has no parsable duration.
+ * Only phrases that actually ask for a delay qualify: a bare interval or a
+ * delay verb. A duration inside an unrelated sentence ("сделано полчаса назад")
+ * is free text, not a snooze. Returns minutes, or null when there is none.
  */
 export function parseSnoozeMinutes(normalized: string): number | null {
+  if (!BARE_INTERVAL_RE.test(normalized) && !DELAY_VERB_RE.test(normalized)) return null;
   for (const word of Object.keys(WORD_NUMBERS)) {
     if (normalized.includes(word)) return WORD_NUMBERS[word];
   }
@@ -101,9 +119,10 @@ export function classifyReminderAnswer(text: string): ReminderIntent {
   if (DONE_RE.test(normalized)) return { action: "done", ...base };
   if (LATER_RE.test(normalized)) return { action: "snooze", minutes: 0, ...base };
   if (TOMORROW_RE.test(normalized)) return { action: "postpone", minutes: 0, ...base };
-  if (TODAY_RE.test(normalized)) return { action: "postpone", minutes: 0, ...base };
   // Snooze with an explicit interval: any phrase naming a minute/hour amount.
   const minutes = parseSnoozeMinutes(normalized);
   if (minutes !== null) return { action: "snooze", minutes, ...base };
+  // Everything else — incl. "на вечер", "в пятницу", mixed answers like
+  // "первую сделал, вторую на вечер" — is the agent's call, with the raw text.
   return { action: "other", ...base };
 }

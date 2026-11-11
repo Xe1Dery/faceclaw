@@ -143,12 +143,28 @@ test('endpointing ends the capture without a tap', () => {
   assert.equal(outcomes[0].minutes, 0);
 });
 
-test('empty capture after the finalize window is no answer', () => {
+test('empty recognition re-arms the popup instead of closing it', () => {
+  // Truly nothing heard: the wearer meant to answer, so offer another try.
   const env = layerEnv();
   const { layer, outcomes } = openReminder(env);
   layer.handleInput(click);
   layer.handleInput(click); // stop with nothing heard
-  env.advance(2500); // finalize window elapses
+  env.advance(2500); // finalize window elapses: empty transcript
+  assert.equal(outcomes.length, 0); // not an answer, not a close: a re-ask
+  layer.handleInput(click); // the note invites a second attempt
+  env.emitTranscript('сделано', true);
+  assert.equal(outcomes.length, 1);
+  assert.equal(outcomes[0].action, 'done');
+});
+
+test('an empty-recognition note that lapses leaves the popup on its ttl', () => {
+  const env = layerEnv();
+  const { layer, outcomes } = openReminder(env, { ttlMs: 30_000 });
+  layer.handleInput(click);
+  layer.handleInput(click);
+  env.advance(2500); // empty: the note shows, then lapses and re-arms
+  env.advance(2_500); // the note lapses, the popup re-arms on its 30s ttl
+  env.advance(31_000); // the re-armed ttl passes with no second attempt
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'expired');
 });
@@ -211,46 +227,34 @@ test('the hard capture cap ends a runaway capture', () => {
   const { layer, outcomes } = openReminder(env);
   layer.handleInput(click);
   env.advance(31_000); // hard cap fires; no transcript ever arrives
-  env.advance(2_500); // finalize window elapses
+  env.advance(2_500); // finalize window elapses on an empty transcript
+  assert.equal(outcomes.length, 0); // nothing heard: a re-ask, not an answer
+  env.advance(3_000); // the note lapses, the popup re-arms on its 60s ttl
+  env.advance(61_000); // the re-armed ttl passes untouched
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'expired');
 });
 
-test('an unrecognized answer re-asks once instead of settling', () => {
+test('an unrecognized phrase settles at once as other with the raw text', () => {
+  // The classifier missing the words is not a mishearing: the phrase goes to
+  // the courier on the first attempt, verbatim, for it to interpret.
   const env = layerEnv();
   const { layer, outcomes } = openReminder(env);
   layer.handleInput(click);
-  env.emitTranscript('ыыы тфыы', true); // classifier: other
-  assert.equal(outcomes.length, 0); // not settled: the layer re-asked
-  layer.handleInput(click); // tap during the re-ask restarts capture
-  env.emitTranscript('сделано', true);
-  assert.equal(outcomes.length, 1);
-  assert.equal(outcomes[0].action, 'done');
+  env.emitTranscript('перенеси на вечер', true); // classifier: other
+  assert.equal(outcomes.length, 1); // no re-ask phase, no second attempt
+  assert.equal(outcomes[0].action, 'other');
+  assert.equal(outcomes[0].text, 'перенеси на вечер');
 });
 
-test('a second unrecognized answer settles as other carrying both transcripts', () => {
+test('garbled output still ships on the first attempt, never held for repeats', () => {
   const env = layerEnv();
   const { layer, outcomes } = openReminder(env);
   layer.handleInput(click);
-  env.emitTranscript('ыыы', true);
-  env.advance(3_000); // re-ask window lapses, popup re-arms
-  layer.handleInput(click);
-  env.emitTranscript('ффыу', true);
+  env.emitTranscript('ыыы тфыы', true);
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].action, 'other');
-  assert.match(outcomes[0].text, /ыыы/);
-  assert.match(outcomes[0].text, /ффыу/);
-});
-
-test('re-ask then silence is no answer: the re-armed popup expires on ttl', () => {
-  const env = layerEnv();
-  const { layer, outcomes } = openReminder(env, { ttlMs: 30_000 });
-  layer.handleInput(click);
-  env.emitTranscript('непонятно что', true);
-  env.advance(3_000); // re-ask lapses, TTL re-armed
-  env.advance(31_000); // full ttl passes with no second attempt
-  assert.equal(outcomes.length, 1);
-  assert.equal(outcomes[0].action, 'expired');
+  assert.equal(outcomes[0].text, 'ыыы тфыы');
 });
 
 test('free-text popups return any answer verbatim as other, no re-ask', () => {

@@ -35,7 +35,7 @@ export type ReminderOutcome = {
 
 /** How long the confirmation glyph stays before the layer closes itself. */
 const CONFIRM_MS = 1200;
-/** How long the "didn't catch that" re-ask stays before the popup re-arms. */
+/** How long the "didn't catch that" note stays before the popup re-arms. */
 const REASK_MS = 2500;
 /** Hard cap on one capture, however it was started and whatever endpointing misses. */
 const CAPTURE_HARD_MS = 30_000;
@@ -51,9 +51,7 @@ export class ReminderLayer implements Layer {
   private resolved = false;
   /** The answer was delegated to the dictation bar, not this layer's own mic. */
   private delegated = false;
-  /** Free-text answers already seen this popup; a second one settles as "other". */
-  private reasked = false;
-  private firstTranscript = "";
+  /** Whether the empty-recognition re-ask note is currently on screen. */
   private reaskTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeSpeechEnd: (() => void) | null = null;
@@ -177,7 +175,7 @@ export class ReminderLayer implements Layer {
         }
         return;
       case "reask":
-        // A tap during the re-ask message starts the second attempt right away.
+        // A tap during the "didn't catch that" note starts another attempt.
         if (event.type === "click") {
           this.clearReaskTimer();
           this.beginCapture();
@@ -298,7 +296,13 @@ export class ReminderLayer implements Layer {
     if (this.resolved) return;
     const transcript = this.liveText.trim();
     if (!transcript) {
-      this.settle({ action: "expired" });
+      // Truly empty recognition (the mic opened, nothing was heard): the
+      // wearer clearly meant to answer, so offer another attempt instead of
+      // closing. The TTL runs again; walking away still expires the popup.
+      this.phase = "reask";
+      this.detail = "Не расслышал. Тап - ещё раз";
+      this.reaskTimer = setTimeout(() => this.rearm(), REASK_MS);
+      this.actions.requestRender();
       return;
     }
     if (this.request.freeText) {
@@ -307,27 +311,11 @@ export class ReminderLayer implements Layer {
       this.settle({ action: "other", text: transcript });
       return;
     }
-    const intent = classifyReminderAnswer(transcript);
-    if (intent.action === "other" && !this.reasked) {
-      // The classifier did not recognize the words (mumbled answer, STT
-      // garble). Ask once instead of shipping ambiguous free text to the
-      // courier: show the re-ask, then re-arm the popup for a second
-      // attempt. A second unrecognized answer settles as "other" carrying
-      // both transcripts, so the loop can never trap the wearer.
-      this.reasked = true;
-      this.firstTranscript = transcript;
-      this.phase = "reask";
-      this.detail = `Не расслышал: "${transcript}". Тап - ещё раз`;
-      this.reaskTimer = setTimeout(() => this.rearm(), REASK_MS);
-      this.actions.requestRender();
-      return;
-    }
-    if (intent.action === "other" && this.reasked) {
-      // Second miss: carry both attempts so the courier has the best chance.
-      intent.text = `${this.firstTranscript} / ${intent.text}`.slice(0, 300);
-    }
-    const outcome: ReminderOutcome = { ...intent };
-    this.settle(outcome);
+    // Any non-empty transcript settles on the first attempt, whatever the
+    // local classifier made of it: an unrecognized phrase is not a mishearing
+    // but an answer with meaning the phone cannot parse, and the courier can.
+    // The raw text always travels along as `text`.
+    this.settle({ ...classifyReminderAnswer(transcript) });
   }
 
   /** After the re-ask window lapses: back to waiting, with the TTL running again. */
@@ -335,8 +323,7 @@ export class ReminderLayer implements Layer {
     if (this.resolved) return;
     this.clearReaskTimer();
     this.phase = "waiting";
-    // The second attempt must classify only the second utterance: an empty
-    // one is no answer (expired), never the stale first transcript again.
+    // The next attempt starts from nothing: never the stale transcript.
     this.liveText = "";
     this.detail = "Тап - ответить";
     this.armTtl();

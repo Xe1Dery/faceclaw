@@ -13,7 +13,16 @@ test('fixed Russian commands classify to their actions', () => {
   assert.equal(intents.classifyReminderAnswer('не сейчас').minutes, 0);
   assert.equal(intents.classifyReminderAnswer('Перенеси на завтра').action, 'postpone');
   assert.equal(intents.classifyReminderAnswer('завтра').action, 'postpone');
-  assert.equal(intents.classifyReminderAnswer('вечером').action, 'postpone');
+});
+
+test('a due-date change with an open time stays other for the agent', () => {
+  // The postpone contract is tomorrow morning; "на вечер" must not inherit it.
+  for (const text of ['перенеси на вечер', 'на вечер', 'вечером',
+    'перенеси на сегодня', 'на сегодня', 'сегодня', 'в пятницу', 'на выходных']) {
+    const intent = intents.classifyReminderAnswer(text);
+    assert.equal(intent.action, 'other', text);
+    assert.equal(intent.text, text, text); // raw text carried for the agent
+  }
 });
 
 test('explicit snooze intervals parse from digits and number-words', () => {
@@ -47,6 +56,12 @@ test('free text stays other and carries the raw transcript', () => {
   assert.equal(intents.classifyReminderAnswer('сделано но там ещё правки').action, 'other');
   // A bare number is not a snooze without a minute/hour word.
   assert.equal(intents.classifyReminderAnswer('5').action, 'other');
+});
+
+test('a duration in an unrelated sentence is free text, not a snooze', () => {
+  // "полчаса" only snoozes when the phrase actually asks for a delay.
+  assert.equal(intents.classifyReminderAnswer('сделано полчаса назад').action, 'other');
+  assert.equal(intents.classifyReminderAnswer('убери на полчаса из календаря').action, 'other');
 });
 
 test('empty transcript classifies as other with empty text', () => {

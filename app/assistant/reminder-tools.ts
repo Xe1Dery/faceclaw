@@ -33,10 +33,14 @@ export function registerReminderTools(registry: ToolRegistry = toolRegistry): vo
         "Show an interactive reminder on the glasses and wait for the wearer's spoken answer. " +
         "The popup opens with the microphone off; a tap on the temple starts one short voice answer. " +
         "Returns a JSON object {reminderId, taskId, action, minutes?, text?, respondedAtMs} where action is " +
-        "done | snooze | postpone | other (a classified voice answer), or dismissed | expired | cancelled " +
-        "(no answer: swiped away, timed out, or retracted). snooze carries minutes (0 = 'not now'). " +
+        "done | snooze | postpone | other (any spoken answer settles on the first attempt, the raw transcript " +
+        "always travels as text; interpret 'other' yourself - the phone only classifies unambiguous commands), " +
+        "or dismissed | expired | cancelled (no answer: swiped away, timed out, or retracted). snooze carries " +
+        "minutes (0 = 'not now'); postpone means tomorrow morning; a due-date change with an open time " +
+        "('на вечер', 'в пятницу') comes back as other, never as postpone. " +
         "With free_text=true nothing is classified: any spoken answer returns action 'other' with the raw " +
         "transcript (use for grouped reminders whose answer is a sentence, not a command). " +
+        "A tap with nothing heard re-arms the popup for another attempt instead of closing it. " +
         "Only one reminder per reminderId can be open; a repeated call returns the same answer.",
       inputSchema: {
         type: "object",
