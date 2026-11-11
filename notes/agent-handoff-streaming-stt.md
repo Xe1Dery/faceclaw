@@ -619,6 +619,31 @@ Real-G2 confirmation is still required. If it fails, capture both
 `/sdcard/Android/data/com.faceclaw.app/files/frame-timings.txt` immediately
 after one head-up and one long-press attempt.
 
+### Reminder voice answers: first-attempt shipping / APK 829 (2026-11-11)
+
+Interactive reminder answers no longer re-ask on unrecognized phrases (fa6ec34).
+Before: the layer held the first `other` answer behind a "Не расслышал" note and
+forced a repeat, and TODAY_RE classified "перенеси на вечер" as `postpone`,
+whose courier contract is tomorrow 09:00 — a wrong due date. Now: any non-empty
+final transcript settles at once with the classified intent and the raw text
+always travels as `text`; the re-ask phase fires only on truly empty recognition
+(note lapses back to waiting on a re-armed ttl, so walking away still expires).
+Open-time reschedules ("на вечер", "сегодня", "в пятницу") classify as `other`
+for Nano to resolve via update_task; `parseSnoozeMinutes` requires the phrase to
+actually ask for a delay, so "сделано полчаса назад" stays free text. Tool
+description states the new contract. Zipformer/WSS/plain voice dialog untouched.
+Suite 1247/0/3-skip.
+
+`dist/Faceclaw-0.8.7-local-829.apk`: package `com.faceclaw.app`, versionCode
+829, certificate SHA-256 `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256 `d589ddc51de0049f6fcaed2abd3fd335b1e23439fe80d21195b56ac6ff9416dc`.
+Version bookkeeping note: the 825-828 entries above were recorded by the
+2026-11-10 sessions but their APKs are not in `dist/` (the counter file still
+said 824); 829 is built from the current tree, so it contains every change
+described in the 825-828 entries plus this reminder-answer fix, and supersedes
+them. In-place update over the established local debug lineage; no GitHub
+Release or upload was made.
+
 ## Unfinished work — do this next
 
 0. **Interactive reminders (TickTick <-> OpenClaw, added 2026-11-08).** The phone side
@@ -641,7 +666,7 @@ after one head-up and one long-press attempt.
 2. Install without deleting data:
 
    ```bash
-   adb install -r dist/Faceclaw-0.8.7-local-828.apk
+   adb install -r dist/Faceclaw-0.8.7-local-829.apk
    ```
 
    Manual transfer through cloud storage and opening the same APK on the phone is equivalent
