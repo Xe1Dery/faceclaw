@@ -324,7 +324,7 @@ test('an unlocked popup slides up from the screen bottom to its rest place', () 
   assert.equal(rest.a[1], 40 + 80); // minWindowTop + 80, the classic rest place
 });
 
-test('a locked-glasses popup paints standalone, centered, interface down', () => {
+test('a locked-glasses popup paints standalone at its Display-mode position', () => {
   const env = layerEnv();
   const outcomes = [];
   const layer = new env.mod.ReminderLayer(
@@ -340,5 +340,5 @@ test('a locked-glasses popup paints standalone, centered, interface down', () =>
   assert.equal(belowAsked, false, 'paintBelow is never asked: the interface stays down');
   assert.equal(image.value, 1, 'the canvas starts opaque black');
   const frame = image.ops.find((o) => o.op === 'fillRect');
-  assert.equal(frame.a[1], Math.round((480 - 128) / 2), 'centered on the screen');
+  assert.equal(frame.a[1], 40 + 80, 'same rest position as the unlocked frame');
 });

@@ -118,6 +118,10 @@ test('a finalized phrase shows the glyph hints and sends on tap', () => {
   const hint = ops.find((o) => o.op === 'text' && /отправить/.test(o.text ?? ''));
   assert.ok(hint, 'hint row appears after finalization');
   assert.match(hint.text, /● отправить\s+▲▼ заново\s+●● закрыть/);
+  assert.ok(
+    ops.some((o) => o.op === 'drawRect' && o.a[2] === 8 && o.a[3] === 12),
+    'the finalized microphone is outline-only',
+  );
   layer.handleInput(click);
   assert.equal(done.length, 1);
   assert.equal(done[0].action, 'sent');
@@ -239,14 +243,14 @@ test('an unlocked bar slides up from the screen bottom to its rest place', () =>
   assert.equal(rest.a[1] + rest.a[3], 402, 'at rest the bottom edge is the interface bottom');
 });
 
-test('a standalone bar arrives at rest, without a slide', () => {
+test('a standalone bar arrives at its Display-mode rest place, without a slide', () => {
   const env = layerEnv();
   const { layer } = env.openBar({ standalone: true }, false);
   const image = layer.paint({}, () => null); // standalone: its own opaque canvas
   const frame = image.ops.find((o) => o.op === 'fillRect');
-  // Locked glasses: the bar rides the screen's brightness transition, so it
-  // is already on the screen's bottom edge at first paint (device issue 3).
-  assert.equal(frame.a[1] + frame.a[3], 480);
+  // Locked glasses: no interface is painted, but its selected geometry still
+  // anchors the bar at the same lower edge.
+  assert.equal(frame.a[1] + frame.a[3], 402);
 });
 
 test('a bar removed mid-slide stops its timer', () => {
@@ -299,7 +303,7 @@ test('the no-link refusal paints the reason line at the interface bottom', () =>
   assert.equal(text.text, 'Нет связи с OpenClaw');
 });
 
-test('the locked-glasses bar paints standalone on the screen bottom', () => {
+test('the locked-glasses bar paints standalone at the Display-mode bottom', () => {
   const env = layerEnv();
   const { layer } = env.openBar({ standalone: true });
   layer.startCapture();
@@ -308,7 +312,7 @@ test('the locked-glasses bar paints standalone on the screen bottom', () => {
   assert.equal(belowAsked, false, 'the interface stays down behind the bar');
   assert.equal(image.value, 1, 'the canvas starts opaque black');
   const frame = image.ops.find((o) => o.op === 'fillRect');
-  assert.equal(frame.a[1] + frame.a[3], 480, 'anchored to the screen bottom, no band to ride');
+  assert.equal(frame.a[1] + frame.a[3], 402, 'same interface anchor, without painting the interface');
 });
 
 test('the locked-glasses no-link refusal paints standalone too', () => {
@@ -318,5 +322,5 @@ test('the locked-glasses no-link refusal paints standalone too', () => {
   const image = layer.paint({}, () => { belowAsked = true; return null; });
   assert.equal(belowAsked, false);
   const frame = image.ops.find((o) => o.op === 'fillRect');
-  assert.equal(frame.a[1] + frame.a[3], 480);
+  assert.equal(frame.a[1] + frame.a[3], 402);
 });

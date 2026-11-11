@@ -125,7 +125,7 @@ test('shell modal carries its inner menu highlight animation instead of baking i
       '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},'../graphics/screen-size':{screenWidth:()=>640,screenHeight:()=>480},
       './gestures':{isDirectionalInput:()=>false},
     }),
-    './geometry':{appViewportSize:()=>({width:120,height:110}),appViewportRect:()=>({x:10,y:20,width:120,height:110}),SHELL_OPAQUE_BLACK:1},
+    './geometry':{appViewportSize:()=>({width:120,height:110}),appViewportRect:()=>({x:10,y:20,width:120,height:110}),screenWidth:()=>640,screenHeight:()=>480,SHELL_OPAQUE_BLACK:1},
   });
   const modal=new ShellModalLayer(menu().layer,noopLayerActions),paint=()=>modal.paint({},()=>new graphics.GrayImage(200,200));
   const bare=menu().paint().draws.find(d=>d.presentation),before=paint().draws.find(d=>d.presentation);
@@ -134,6 +134,10 @@ test('shell modal carries its inner menu highlight animation instead of baking i
   const image=paint(),row=image.draws.find(d=>d.presentation);
   assert.ok(row.y>before.y);assert.ok(row.presentation.displayList.timeline,'the slide stays a timed display list');
   assert.ok(!image.withDrawsBaked(false).pixels.some(v=>v===255),'selected text is not baked into the modal surface');
+  const standalone=new ShellModalLayer(menu().layer,noopLayerActions,undefined,true);
+  let below=false;const alone=standalone.paint({},()=>{below=true;return new graphics.GrayImage(200,200)});
+  assert.equal(below,false,'a screen-off notification never paints the interface below');
+  assert.deepEqual([alone.width,alone.height],[640,480]);
 });
 test('shell crop widens a fractional rect (TTF-measured status bar) to whole pixels',()=>{
   const {shellCrop}=require('../.test-build/app/graphics/shell-scene.js'),image=new graphics.GrayImage(576,288,7);

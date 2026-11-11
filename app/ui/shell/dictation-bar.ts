@@ -159,9 +159,10 @@ export class DictationBarLayer implements Layer {
     const hintShown = this.phase === "finalized";
     const height =
       BAR_LINE_BASE + Math.max(0, lines.length - 1) * BAR_LINE_STEP + (hintShown ? HINT_BLOCK : 0);
-    // With no interface raised there is no band to anchor to: the bar sits
-    // on the screen's own bottom edge.
-    const rest = (this.standalone ? screenHeight() : this.interfaceBottom()) - height;
+    // A standalone bar hides the interface, but keeps its geometry: Display
+    // mode and vertical position still define the interface edge it belongs
+    // to. Thus Top puts it under the top band exactly as an unlocked bar.
+    const rest = this.interfaceBottom() - height;
     // Unlocked: the bar rises from the screen's bottom edge to its rest
     // place (device issue 3); standalone, it simply appears.
     const y = this.standalone ? rest : Math.round(rest + (1 - this.slide) * (screenHeight() - height - rest));
@@ -169,8 +170,10 @@ export class DictationBarLayer implements Layer {
     // under it (the switcher row must not peek out from below it).
     image.fillRect(x, y, width, height, SHELL_OPAQUE_BLACK);
     image.drawRect(x, y, width, height, 120);
-    const micValue = this.isCapturing() && this.listening ? 235 : 150;
-    drawMicGlyph(image, x + 12, y + 10, MIC_SIZE, micValue);
+    // The panel cannot express a reliable per-element brightness difference.
+    // Use shape instead: filled while recording, outline-only once controls
+    // appear for a finalized phrase.
+    drawMicGlyph(image, x + 12, y + 10, MIC_SIZE, 235, !hintShown);
     const textX = x + 12 + MIC_SIZE + 12;
     if (lines.length) {
       lines.forEach((line, i) => image.drawText(medium, textX, y + 14 + i * BAR_LINE_STEP, line, 235));
@@ -488,7 +491,7 @@ export class DictationRefusalLayer implements Layer {
     const medium = getDefaultMediumFont();
     const x = 32;
     const width = screenWidth() - 64;
-    const y = (this.standalone ? screenHeight() : this.interfaceBottom()) - BAR_LINE_BASE;
+    const y = this.interfaceBottom() - BAR_LINE_BASE;
     image.fillRect(x, y, width, BAR_LINE_BASE, SHELL_OPAQUE_BLACK);
     image.drawRect(x, y, width, BAR_LINE_BASE, 90);
     drawMicGlyph(image, x + 12, y + 10, MIC_SIZE, 60);
@@ -508,12 +511,20 @@ export class DictationRefusalLayer implements Layer {
   }
 }
 
-/** The mic glyph: a rounded capsule on a short stand, in the bar's flat style. */
-function drawMicGlyph(image: GrayImage, x: number, y: number, size: number, value: number): void {
+/** The mic glyph: a capsule on a short stand, filled while recording. */
+function drawMicGlyph(
+  image: GrayImage,
+  x: number,
+  y: number,
+  size: number,
+  value: number,
+  filled = true,
+): void {
   const capW = Math.round(size * 0.34);
   const capX = x + Math.round((size - capW) / 2);
   const capH = Math.round(size * 0.52);
-  image.fillRect(capX, y, capW, capH, value);
+  if (filled) image.fillRect(capX, y, capW, capH, value);
+  else image.drawRect(capX, y, capW, capH, value);
   // cradle: an open arc under the capsule
   const arcY = y + capH + 2;
   image.drawLine(x + 3, arcY - 2, x + 3, arcY + 1, value);

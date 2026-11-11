@@ -196,7 +196,7 @@ test('controller filters before waking or opening a popup, and still refreshes t
   const { NotificationPopupDelay, notificationPopupDelayMs } = require('../.test-build/app/ui/shell/notification-popup-delay.js');
   const prefs = store();
   let active = [{ ...mail, key: 'key' }];
-  let wakes = 0, popups = 0, renders = 0;
+  let wakes = 0, popups = 0, renders = 0, popupWoke = false;
   const removed = [];
   const { Harness } = evaluate(`export class Harness { ${members.join('\n')} }`, null, {
     ALL_NOTIFICATIONS: 0x7fffffff,
@@ -206,7 +206,7 @@ test('controller filters before waking or opening a popup, and still refreshes t
     shell: {
       isScreenOn: () => false,
       wake: () => { wakes++; return true; },
-      openNotificationModal: () => popups++,
+      openNotificationModal: (_key, woke) => { popups++; popupWoke = woke; },
       notificationRemoved: (key) => removed.push(key),
     },
   });
@@ -234,8 +234,9 @@ test('controller filters before waking or opening a popup, and still refreshes t
   instance.handleAndroidNotificationPosted('key');
   assert.equal(popups, 0, 'the popup waits out its delay');
   elapse();
-  assert.equal(wakes, 1);
+  assert.equal(wakes, 0, 'the controller lets the standalone modal own the wake');
   assert.equal(popups, 1);
+  assert.equal(popupWoke, true);
 
   // Withdrawn by its source during the delay: no wake, no popup, and the shell hears of it.
   active = [{ ...mail, key: 'working', foregroundService: true }];
@@ -243,7 +244,7 @@ test('controller filters before waking or opening a popup, and still refreshes t
   active = [];
   instance.handleAndroidNotificationRemoved('working');
   elapse();
-  assert.equal(wakes, 1);
+  assert.equal(wakes, 0);
   assert.equal(popups, 1);
   assert.deepEqual(removed, ['working']);
 

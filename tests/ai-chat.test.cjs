@@ -350,11 +350,27 @@ test('wakeword wakes the shared shell, respects its action, and opens only one h
     if (wakeAction === 'voice-input') {
       const options = env.dictationBars[0];
       assert.equal(options.autoSend, true);
+      assert.equal(options.standalone, true, 'a dark-screen wakeword opens only the bar');
       await env.shell.receiveInput(event);
       assert.equal(env.dictationBars.length, 1);
     }
     env.shell.stack.clearToBase();
   }
+});
+
+test('the controller pre-wake marker keeps a wakeword dictation standalone', async () => {
+  const env = shellEnv({ wakeAction: 'voice-input', skipConfirmation: true });
+  env.shell.isAssistantAvailable = () => true;
+  env.shell.sleep();
+  assert.equal(env.shell.prepareAssistantStandaloneWake(), true);
+  // DashboardController resumes EvenHub while keeping the compositor blank,
+  // then the first standalone shell frame owns the unblank.
+  env.shell.wake('sidebar');
+  await env.shell.receiveInput(env.event('wakeword'));
+  assert.equal(env.dictationBars.length, 1);
+  assert.equal(env.dictationBars[0].standalone, true);
+  env.dictationBars[0].onDone({ action: 'closed' });
+  assert.equal(env.shell.isScreenOn(), false, 'closing a dark-screen dictation returns to sleep');
 });
 
 test('chat holds bypass the escape timer; release, menus and double tap follow the requested routing', async () => {

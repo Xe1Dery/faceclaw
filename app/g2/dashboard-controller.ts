@@ -322,7 +322,10 @@ class DashboardController {
     getDisplay: () => this.display,
     getProvider: () => ALL_APPS.find((app) => app.glanceboard)?.glanceboard ?? null,
     canShow: () => (this.phase === "connected" || this.isPreviewDisplayActive()) && !this.glassesLocked,
-    ensureSessionActive: (frameId) => this.ensureEvenHubSessionActive(frameId),
+    // Unlike the regular shell, Glanceboard intentionally stays logically
+    // asleep while its own surface is visible. Its wake barrier must still
+    // reveal that already-staged surface after an EvenHub resume.
+    ensureSessionActive: (frameId) => this.ensureEvenHubSessionActive(frameId, true),
     onHiddenWhileAsleep: () => {
       if (!shell.isScreenOn()) this.handleScreenStateChanged(false);
     },
@@ -333,6 +336,12 @@ class DashboardController {
     appendLog: (message) => this.appendLog(message),
   });
   private evenHubResumePromise: Promise<boolean> | null = null;
+  /**
+   * A dark-screen standalone wake must not reveal the retained shell scene.
+   * Keep the compositor blanked until renderShell has staged a scene whose
+   * top layer is the standalone frame, then unblank that scene atomically.
+   */
+  private standaloneWakeUnblankPending = false;
   /** Faceclaw's firmware at the required revision reported in; its extensions can be used. */
   private customFirmwareConfirmed = false;
   private faceclawWakeLeaseState: boolean | null = null;
@@ -467,7 +476,10 @@ class DashboardController {
         // Any wake of the regular UI replaces a showing Glanceboard.
         if (on) this.glance.dismiss();
         this.handleScreenStateChanged(on);
-        if (on) this.requestShellRender();
+        // A standalone wake is still showing the compositor's black sleep
+        // frame. Its layer will request a render after it has been pushed;
+        // rendering here would stage the retained switcher before that push.
+        if (on && !this.standaloneWakeUnblankPending) this.requestShellRender();
         this.emit();
       },
     });
@@ -719,6 +731,10 @@ class DashboardController {
       return;
     }
 
+    // A sleep that wins the race with a pending standalone open must never
+    // let a later render unblank the display again.
+    this.standaloneWakeUnblankPending = false;
+
     const communicator = this.communicator;
     if (communicator) {
       // Blanking is a compositor-level flag so worker-window surfaces go dark
@@ -892,7 +908,7 @@ class DashboardController {
    * owns the second matters. Callers that join an in-flight barrier share
    * the first caller's spans.
    */
-  private ensureEvenHubSessionActive(frameId = 0): Promise<boolean> {
+  private ensureEvenHubSessionActive(frameId = 0, unblankWhileShellAsleep = false): Promise<boolean> {
     if (this.evenHubResumePromise) return this.evenHubResumePromise;
     const communicator = this.communicator;
     if (!communicator) {
@@ -900,6 +916,7 @@ class DashboardController {
       // unblanking the headless compositor so the mirror lights back up.
       const preview = this.previewTarget;
       if (!preview) return Promise.resolve(false);
+      if (this.standaloneWakeUnblankPending) return Promise.resolve(true);
       return preview.setScreenBlanked(false).then(() => {
         this.schedulePreviewUpdate();
         return true;
@@ -917,9 +934,13 @@ class DashboardController {
       if (!resumed) {
         return false;
       }
-      // Resume first: setScreenBlanked(false) then recomposites retained state
-      // as the desired first frame for the fresh layout.
-      await frameTimings.spanAsync(frameId, "wake:unblank", () => communicator.setScreenBlanked(false));
+      // A regular wake restores the retained scene here. A standalone wake
+      // remains black until renderShell has submitted the bar/modal itself;
+      // otherwise this exact unblank flashes the retained App switcher for
+      // the whole resume barrier.
+      if (!this.standaloneWakeUnblankPending && (shell.isScreenOn() || unblankWhileShellAsleep)) {
+        await frameTimings.spanAsync(frameId, "wake:unblank", () => communicator.setScreenBlanked(false));
+      }
       const ready = await frameTimings.spanAsync(frameId, "wake:await-ready", () =>
         communicator.awaitEvenHubSessionReady(EVENHUB_WAKE_READY_TIMEOUT_MS),
       );
@@ -2504,12 +2525,16 @@ class DashboardController {
         event.eventType === EvenAIStatus.EVEN_AI_WAKE_UP &&
         wakeWordActionSetting.get() !== "off";
       const displayShouldWake = event.kind === "display-wake";
+      // A voice-input wakeword owns the dark screen with its dictation bar.
+      // Hide retained surfaces before the resume barrier, keep it blanked,
+      // then let the shell consume this marker and own the first unblank.
+      const assistantStandaloneWake = wakewordShouldWake && shell.prepareAssistantStandaloneWake();
       let shellPreWoke = false;
       if (wakewordShouldWake || displayShouldWake) {
         if (!shell.isScreenOn()) {
           shellPreWoke = shell.wake(displayShouldWake ? shell.userWakeFocus() : "sidebar");
         }
-        if (shellPreWoke || this.evenHubSessionSuspended || this.evenHubResumePromise) {
+        if (shellPreWoke || assistantStandaloneWake || this.evenHubSessionSuspended || this.evenHubResumePromise) {
           const ready = await frameTimings.spanAsync(frameId, "wake-barrier", () =>
             this.ensureEvenHubSessionActive(frameId),
           );
@@ -2578,8 +2603,24 @@ class DashboardController {
    * regular UI's wake.
    */
   private glanceEventFor(inputEvent: InputEvent, event: RawInputEvent): GlanceEvent | null {
+    // Depending on the active CFW wake path, a sleep gesture may arrive as
+    // its ordinary sys-event or wrapped in display-wake. Accept both forms;
+    // older code recognized only HEAD_UP inside display-wake, so a forwarded
+    // hold (and HEAD_UP delivered as sys-event) silently bypassed Glanceboard.
+    if (event.eventType === OsEventTypeList.HEAD_UP_EVENT) {
+      return this.glance.eventForGesture("head-tilt");
+    }
     if (inputEvent.type === "display-wake") {
-      return event.eventType === OsEventTypeList.HEAD_UP_EVENT ? this.glance.eventForGesture("head-tilt") : null;
+      switch (event.eventType) {
+        case OsEventTypeList.RING_LONG_PRESS_EVENT:
+          return this.glance.eventForGesture("long-press");
+        case OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT:
+          return this.glance.eventForGesture("long-press-release");
+        case OsEventTypeList.SHORT_THEN_LONG_PRESS_EVENT:
+          return this.glance.eventForGesture("short-then-long-press");
+        default:
+          return null;
+      }
     }
     return this.glance.eventForGesture(inputEvent.type);
   }
@@ -2715,7 +2756,10 @@ class DashboardController {
     if (!this.openAppsRestored || this.suppressOpenAppsPersist) return;
     const open: string[] = [];
     for (const window of shell.getWindows()) {
-      if (window.appId === "launcher") continue;
+      // Pinned windows (Apps and the live Glanceboard) are recreated by
+      // their boot hooks. Persisting them would reopen the separate settings
+      // app for the same appId on every process restart.
+      if (!window.closeable) continue;
       if (!open.includes(window.appId)) open.push(window.appId);
     }
     savePersistedOpenApps({ open, foreground: shell.foregroundWindow()?.appId ?? null });
@@ -2906,6 +2950,10 @@ class DashboardController {
    * composites whatever state the queue has reached.
    */
   private applyStandaloneSurfaces(active: boolean): void {
+    // beginStandaloneOpening calls this while Shell still considers the
+    // screen off. Remember that ordering so the following wake cannot
+    // unblank the retained shell scene before the standalone layer exists.
+    if (active && !shell.isScreenOn()) this.standaloneWakeUnblankPending = true;
     this.standaloneCooling = active;
     for (const window of shell.getWindows()) {
       // Hiding covers every window; restoring shows only the foreground
@@ -2968,6 +3016,16 @@ class DashboardController {
       frameTimings.finishFrame(frameId, "discarded: shell render with no display target");
       return;
     }
+    // Notification wakes push their layer immediately while the async resume
+    // runs. Wait for that resume without unblanking; submitting a shell scene
+    // to a suspended EvenHub task cannot be the atomic first visible frame.
+    if (this.standaloneWakeUnblankPending) {
+      const ready = await this.ensureEvenHubSessionActive(frameId);
+      if (!ready || !shell.isScreenOn()) {
+        frameTimings.finishFrame(frameId, "discarded: standalone wake did not become ready");
+        return;
+      }
+    }
     const wantFreshData = this.nextShellRenderWantsFreshData;
     this.nextShellRenderWantsFreshData = false;
     if (wantFreshData) frameTimings.logFrame(frameId, "follow-up repaint that must not use cached data");
@@ -2993,6 +3051,17 @@ class DashboardController {
     // return narrows this.phase, making the "charging" comparison impossible.
     const display = this.display;
     await frameTimings.spanAsync(frameId, "submit", () => display.submitShellScene(planes, paintMs, frameId));
+    // The standalone layer is now retained by the compositor. Reveal this
+    // scene, never the pre-wake switcher/list/window frame. Check again after
+    // the await so a concurrent sleep always wins.
+    if (
+      this.standaloneWakeUnblankPending &&
+      shell.isScreenOn() &&
+      shell.standaloneActive()
+    ) {
+      this.standaloneWakeUnblankPending = false;
+      await frameTimings.spanAsync(frameId, "wake:unblank-standalone", () => display.setScreenBlanked(false));
+    }
     // Backpressure: the next shell render waits for this one to reach the
     // glasses. Timing out here means the loop was blocked for the full timeout
     // and any input arriving meanwhile had its chrome repaint delayed, so say
@@ -3038,7 +3107,7 @@ class DashboardController {
       // New notifications open a shell modal over the app viewport; if the
       // screen was off, wake for it and go back to sleep when it is closed.
       // Waking while already on would steal focus, so only wake from sleep.
-      const wokeScreen = shell.isScreenOn() ? false : shell.wake("sidebar");
+      const wokeScreen = !shell.isScreenOn();
       if (wokeScreen) {
         this.appendLog("android notification woke the screen");
       }

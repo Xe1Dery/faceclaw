@@ -231,7 +231,7 @@ export class ChatSessionLayer implements Layer {
     return `${GESTURE_CLICK} продолжить   ${GESTURE_DOUBLE_CLICK} выйти`;
   }
 
-  /** The thread as wrapped lines: user dim with "> ", agent bright, trail last. */
+  /** The thread as wrapped lines: user prefixed with "> ", both roles solid, trail last. */
   private layout(medium: { lineHeight: number; measureText(t: string): number; getGlyph(c: number): { dwidthX: number } | undefined }, width: number): Array<{ text: string; value: number; height: number; font: "medium" | "small" }> {
     const small = getDefaultSmallFont();
     const out: Array<{ text: string; value: number; height: number; font: "medium" | "small" }> = [];

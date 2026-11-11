@@ -242,5 +242,5 @@ test('a locked-glasses question paints standalone with the OpenClaw header', () 
   assert.equal(belowAsked, false, 'the interface stays down behind the frame');
   assert.ok(image.ops.some((o) => (o.text ?? '') === 'OpenClaw'), 'named OpenClaw, never Assistant');
   const frame = image.ops.find((o) => o.op === 'fillRect');
-  assert.equal(frame.a[1], Math.round((480 - 128) / 2), 'centered on the screen');
+  assert.equal(frame.a[1], 40 + 80, 'same Display-mode rest position as the unlocked frame');
 });

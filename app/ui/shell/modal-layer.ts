@@ -2,7 +2,7 @@ import { GrayImage } from "../../graphics/image";
 import { flattenPlanes } from "../../graphics/plane";
 import { InputEvent } from "../gestures";
 import { Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
-import { appViewportRect, appViewportSize, SHELL_OPAQUE_BLACK } from "./geometry";
+import { appViewportRect, appViewportSize, screenHeight, screenWidth, SHELL_OPAQUE_BLACK } from "./geometry";
 
 // The modal covers most of the min-height app viewport, leaving a little of
 // the foreground app visible around the edges. Both its size and position are
@@ -40,7 +40,13 @@ export function modalRect(): { x: number; y: number; width: number; height: numb
 export class ShellModalLayer implements Layer {
   private readonly stack: LayerStack;
 
-  constructor(baseLayer: Layer, actions: LayerActions, private readonly removed?: () => void) {
+  constructor(
+    baseLayer: Layer,
+    actions: LayerActions,
+    private readonly removed?: () => void,
+    /** Screen-off presentation: hide every surface below this modal. */
+    readonly standalone = false,
+  ) {
     this.stack = new LayerStack(baseLayer, actions, modalInterior());
   }
 
@@ -49,7 +55,11 @@ export class ShellModalLayer implements Layer {
   }
 
   paint(_ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
-    const image = paintBelow();
+    // Keep modalRect's current Display-mode position even when the rest of
+    // the interface is absent.
+    const image = this.standalone
+      ? new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK)
+      : paintBelow();
     // Track a display-mode switch while the modal is up, so the inner stack
     // paints at the same size the box below is drawn with.
     const interior = modalInterior();

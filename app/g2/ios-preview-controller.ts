@@ -251,7 +251,7 @@ export class IosPreviewController {
     onIosNotificationPopup(key => {
       const notification = readActiveNotifications(128).find(n => n.key === key)
       if (this.glassesLocked || !notification || !shouldShowNotificationOnGlasses(notification.packageName)) return
-      const woke = !shell.isScreenOn() && shell.wake('sidebar')
+      const woke = !shell.isScreenOn()
       shell.openNotificationModal(key, woke)
       this.requestShellRender()
     })
@@ -640,7 +640,10 @@ export class IosPreviewController {
     this.inputQueue = task.catch(error => this.fail(error))
     return task
   }
-  private async receiveInput(event: InputEvent, headTilt = false): Promise<void> {
+  private async receiveInput(
+    event: InputEvent,
+    glanceWakeGesture: 'head-tilt' | 'long-press' | 'long-press-release' | 'short-then-long-press' | null = null,
+  ): Promise<void> {
     // Input can change the foreground app or the display state, and the shell doesn't announce those.
     this.wearRemote?.schedulePublish()
     if (!acceptInput(event)) return
@@ -655,7 +658,7 @@ export class IosPreviewController {
       return
     }
     if (!shell.isScreenOn()) {
-      const glanceEvent = this.glance.eventForGesture(headTilt ? 'head-tilt' : event.type)
+      const glanceEvent = this.glance.eventForGesture(glanceWakeGesture ?? event.type)
       if (glanceEvent?.type === 'dismiss') this.glance.dismiss()
       else if (glanceEvent) {
         await this.glance.handleEvent(glanceEvent, 0)
@@ -1016,10 +1019,18 @@ export class IosPreviewController {
       if (this.state.phase !== 'connected') return
       this.onActivity()
       if (input.ringInput) this.state = { ...this.state, ring: true }
-      await this.receiveInput(rawInputEventToInputEvent(input),
-        input.kind === 'display-wake' && input.eventType === OsEventTypeList.HEAD_UP_EVENT)
+      await this.receiveInput(rawInputEventToInputEvent(input), this.glanceWakeGesture(input))
       this.logBluetooth(`Input ${input.eventType} source ${input.eventSource}`)
     }).catch(error => this.fail(error))
+  }
+  /** Sleep gestures may be ordinary sys-events or wrapped in display-wake. */
+  private glanceWakeGesture(input: RawInputEvent): 'head-tilt' | 'long-press' | 'long-press-release' | 'short-then-long-press' | null {
+    if (input.eventType === OsEventTypeList.HEAD_UP_EVENT) return 'head-tilt'
+    if (input.kind !== 'display-wake') return null
+    if (input.eventType === OsEventTypeList.RING_LONG_PRESS_EVENT) return 'long-press'
+    if (input.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) return 'long-press-release'
+    if (input.eventType === OsEventTypeList.SHORT_THEN_LONG_PRESS_EVENT) return 'short-then-long-press'
+    return null
   }
   /** Any glasses traffic: CoreBluetooth can wake a suspended process, so refresh what timers would have. */
   private onActivity(): void {

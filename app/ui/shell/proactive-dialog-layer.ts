@@ -103,7 +103,8 @@ export class ProactiveDialogLayer implements Layer {
     const x = 32;
     const width = screenWidth() - 64;
     const height = 128;
-    const rest = this.standalone ? Math.round((screenHeight() - height) / 2) : minWindowTop() + 80;
+    // Standalone hides the interface but keeps the same Display-mode anchor.
+    const rest = minWindowTop() + 80;
     // Unlocked frames slide up from the screen's bottom edge (spec 4).
     const y = Math.round(rest + (1 - this.slide) * (screenHeight() - height - rest));
     image.fillRect(x, y, width, height, 1);

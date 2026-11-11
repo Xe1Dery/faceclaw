@@ -1,6 +1,13 @@
 import { type AppDefinition } from "../app-definition";
 import { GlanceBoard } from "./board";
-import { createGlanceboardAppWindow, GLANCEBOARD_SURFACE_ID, GLANCEBOARD_WINDOW_ID } from "./glanceboard-app";
+import {
+  createGlanceboardAppWindow,
+  createPinnedGlanceboardWindow,
+  GLANCEBOARD_SURFACE_ID,
+  GLANCEBOARD_WINDOW_ID,
+  PINNED_GLANCEBOARD_SURFACE_ID,
+  PINNED_GLANCEBOARD_WINDOW_ID,
+} from "./glanceboard-app";
 import {
   glanceboardEnabledSetting,
   glanceDepth,
@@ -15,6 +22,16 @@ const glanceboardApp: AppDefinition = {
   appId: "glanceboard",
   title: "Glanceboard",
   icon: "eye",
+  // Launcher is booted first. Registering this live board now makes it the
+  // second permanent switcher entry; the settings app launched below remains
+  // a separate, closeable window.
+  boot: (ctx) => {
+    ctx.openInProcessAppInBackground?.(
+      PINNED_GLANCEBOARD_WINDOW_ID,
+      PINNED_GLANCEBOARD_SURFACE_ID,
+      createPinnedGlanceboardWindow,
+    );
+  },
   launch: (ctx) => ctx.launchInProcessApp(GLANCEBOARD_WINDOW_ID, GLANCEBOARD_SURFACE_ID, createGlanceboardAppWindow),
   glanceboard: {
     get size() {

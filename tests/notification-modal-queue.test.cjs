@@ -8,8 +8,8 @@ function makeHost(unavailable = new Set()) {
   const host = {
     opened: [],
     sleeps: 0,
-    open(notificationKey) {
-      const modal = { notificationKey };
+    open(notificationKey, standalone) {
+      const modal = { notificationKey, standalone };
       host.opened.push(modal);
       return modal;
     },
@@ -65,14 +65,29 @@ test("a screen woken by a notification sleeps again once the last modal closes",
   const queue = new NotificationModalQueue(host);
   queue.post("a", true);
   queue.post("b", false);
+  assert.equal(host.opened[0].standalone, true);
   queue.closed(host.opened[0]);
+  assert.equal(host.opened[1].standalone, true, "the whole screen-off notification queue stays standalone");
   assert.equal(host.sleeps, 0, "the next notification opens instead of sleeping");
   queue.closed(host.opened[1]);
   assert.equal(host.sleeps, 1);
   // A modal opened with the screen already on doesn't sleep when closed.
   queue.post("c", false);
+  assert.equal(host.opened[2].standalone, false);
   queue.closed(host.opened[2]);
   assert.equal(host.sleeps, 1);
+});
+
+test("a modal over another standalone layer stays standalone without claiming its wake", () => {
+  const host = makeHost();
+  const queue = new NotificationModalQueue(host);
+  queue.post("a", false, true);
+  queue.post("b", false, false);
+  assert.equal(host.opened[0].standalone, true);
+  queue.closed(host.opened[0]);
+  assert.equal(host.opened[1].standalone, true);
+  queue.closed(host.opened[1]);
+  assert.equal(host.sleeps, 0, "the underlying standalone layer still owns the awake screen");
 });
 
 test("sleep drops the queue; another removal opens the next without sleeping", () => {

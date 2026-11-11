@@ -511,6 +511,114 @@ false; our fork never touched it). Enabling it restored hold-to-show. If
 fresh installs should show the board out of the box, flip the default in
 app/apps/glanceboard/glanceboard-settings.ts (user approval required).
 
+### Local UI follow-up / APK 825 (2026-11-10)
+
+The working tree after `b04fb2d` fixes dark-screen overlays without changing
+the G2 protocol or firmware. `DashboardController` marks a voice-input wake as
+standalone before its EvenHub resume barrier can unblank retained surfaces;
+`Shell` consumes that marker when it opens the dictation bar. Android and iOS
+notification callbacks now let `Shell.openNotificationModal()` own the wake,
+and a standalone `ShellModalLayer` starts from a full-screen black canvas
+instead of calling `paintBelow()`. Notification queue entries carry standalone
+state separately from wake ownership, so a popup over another standalone layer
+does not incorrectly put the display to sleep when it closes.
+
+Standalone overlays keep the current Display mode geometry. In particular,
+Top mode puts the dictation bar at the lower edge of the top interface band,
+exactly where the unlocked bar rests; reminder, proactive-dialog, alert and
+notification frames likewise keep their normal Display-mode anchor. The
+background is the only part omitted. The finalized dictation microphone is now
+outline-only (recording remains filled). User and agent chat lines remain the
+same solid brightness; a stale comment and the preview/spec were corrected.
+
+Relevant regression coverage is in `tests/ai-chat.test.cjs`,
+`tests/dictation-bar.test.cjs`, `tests/menu-display-list.test.cjs`,
+`tests/notification-filter.test.cjs`, `tests/notification-modal-queue.test.cjs`,
+`tests/proactive-dialog-layer.test.cjs`, and `tests/reminder-layer.test.cjs`.
+The focused suite passes 98/98, TypeScript compiles, and oxlint exits 0 (five
+pre-existing warnings). The full suite has only the two known Windows harness
+failures: missing `python3` command and POSIX-vs-Windows path separators in
+`config-transfer-scripts.test.cjs`.
+
+`dist/Faceclaw-0.8.7-local-825.apk` was built and verified: package
+`com.faceclaw.app`, versionCode 825, certificate SHA-256
+`1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`, APK
+SHA-256 `356fa8c889d3c1dce4084596d4a4601d950372c21e5732469b7bad72ee7452ff`.
+It uses the established debug lineage and installs over APK 824 without data
+loss. No GitHub Release or upload was made.
+
+Wearer follow-up produced APK 826. APK 825 still flashed the retained shell
+(App switcher, notifications and empty app frame) during the 0.5–1s wake
+barrier: window surfaces were hidden early, but `ensureEvenHubSessionActive()`
+unblanked the compositor before the standalone layer had replaced the retained
+shell scene. `DashboardController` now keeps the compositor blanked during a
+standalone resume, suppresses the ordinary wake render, waits for EvenHub,
+submits a shell scene whose top is actually standalone, and only then unblanks.
+Closing/cancelling a standalone assistant bar (including empty/hard timeout),
+or dismissing the standalone no-link frame, calls `Shell.sleep()` before the
+background-surface veto can be released. Thus cancellation returns directly to
+black rather than exposing the previous app/menu.
+
+`dist/Faceclaw-0.8.7-local-826.apk`: package `com.faceclaw.app`, versionCode
+826, same certificate SHA-256 `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256 `f51300c90921695a7215c4a172c00c85cf8cac9facd8a1d31b12f7a7c0e47146`.
+Focused wake/notification/dictation tests pass 62/62; TypeScript and targeted
+oxlint pass. The full Windows run still has only the two known harness failures
+described above. Real-G2 acceptance for the atomic unblank remains required.
+
+### Glanceboard gesture repair and pinned live board / APK 827 (2026-11-10)
+
+The permanent second switcher entry is the live `GlanceBoard`, equivalent to
+the existing Preview view. It is deliberately **not** the Glanceboard settings
+window: `glanceboard.boot` registers `glanceboard-view` as a non-closeable
+background window after the pinned Apps/Launcher window, while the normal
+Launcher entry still launches the separate closeable settings window
+`glanceboard`. The live board starts its widgets only while foreground and the
+screen is on. It uses the configured 2x2/2x3 layout and 1:1 crop/pad rendering.
+Pinned windows are no longer written to the open-app restore list, preventing
+the shared `glanceboard` app id from reopening the settings window at boot.
+
+Sleep gesture routing now accepts both forms emitted by CFW: an ordinary
+sys-event and the same event wrapped as `display-wake`. This repairs long-press
+and head-up/nod Glanceboard activation on Android and the iOS preview path,
+without changing the G2 protocol or firmware. Tests
+`tests/glance-routing.test.cjs` and `tests/glanceboard-pinning.test.cjs` pin the
+two event encodings and the live-board/settings-window separation.
+
+Validation: targeted Glanceboard tests pass 22/22; TypeScript and targeted
+oxlint pass. Full JS suite: 1239 pass, 2 known Windows-only harness failures
+(`python3` command missing and POSIX-vs-Windows path separators), 3 skipped.
+Real-G2 acceptance is still needed for the physical long-press and head-nod
+event encodings and for confirming switcher position/order.
+
+`dist/Faceclaw-0.8.7-local-827.apk`: package `com.faceclaw.app`, versionCode
+827, same certificate SHA-256 `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`.
+APK SHA-256 `daa323f15384f5efe25633a96aba4ad1966d91f7a6f93f8aedd19fdb0b935f22`.
+It is an in-place update over the established local debug lineage; no GitHub
+Release or upload was made.
+
+Wearer testing of 827 found that neither long-press nor head-up made the
+sleep-time board visible. The gesture routing itself was correct; this was a
+regression in the APK 826 atomic-unblank fix. After an EvenHub resume,
+`ensureEvenHubSessionActive()` unblanked only when `shell.isScreenOn()` was
+true. Glanceboard intentionally leaves the regular shell logically asleep, so
+its rendered and visible compositor surface remained behind the black frame.
+The GlanceHost wake barrier now explicitly permits unblanking its already
+staged surface while the shell stays asleep. `standaloneWakeUnblankPending`
+still takes precedence, so notification/dictation wakes cannot reveal retained
+UI early. `tests/glance-routing.test.cjs` covers all three cases: ordinary
+sleep stays blanked, Glanceboard unblanks, and pending standalone remains
+blanked. Related focused suite passes 49/49, with an additional final 35/35
+run; TypeScript and targeted oxlint pass.
+
+`dist/Faceclaw-0.8.7-local-828.apk`: package `com.faceclaw.app`, versionCode
+828, certificate SHA-256 `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256 `fa5a68e010362f365907a04c328e3c51cae41b9873aa6748762e11b19d89dbf5`.
+Real-G2 confirmation is still required. If it fails, capture both
+`adb logcat -d -s FaceclawComm FrameTimings` and
+`/sdcard/Android/data/com.faceclaw.app/files/frame-timings.txt` immediately
+after one head-up and one long-press attempt.
+
 ## Unfinished work — do this next
 
 0. **Interactive reminders (TickTick <-> OpenClaw, added 2026-11-08).** The phone side
@@ -533,7 +641,7 @@ app/apps/glanceboard/glanceboard-settings.ts (user approval required).
 2. Install without deleting data:
 
    ```bash
-   adb install -r dist/Faceclaw-0.8.7-local-810.apk
+   adb install -r dist/Faceclaw-0.8.7-local-828.apk
    ```
 
    Manual transfer through cloud storage and opening the same APK on the phone is equivalent

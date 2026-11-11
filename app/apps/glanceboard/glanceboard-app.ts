@@ -32,6 +32,9 @@ import { findGlanceWidget, glanceWidgetSpans } from "./widgets";
 
 export const GLANCEBOARD_WINDOW_ID = "glanceboard";
 export const GLANCEBOARD_SURFACE_ID = "window:glanceboard";
+/** The pinned live board. The settings app above remains a separate window. */
+export const PINNED_GLANCEBOARD_WINDOW_ID = "glanceboard-view";
+export const PINNED_GLANCEBOARD_SURFACE_ID = "window:glanceboard-view";
 
 const TITLE_X = 18;
 const TITLE_Y = 10;
@@ -356,14 +359,7 @@ class GlancePreviewLayer implements Layer {
   }
 
   paint(ctx: LayerContext): GrayImage {
-    const { width, height } = ctx.stack.getBaseSize();
-    const board = this.board.paint();
-    if (board.width === width && board.height === height) return board;
-    // A viewport of another size (a per-app display override) shows the board
-    // top-left, cropped or padded, rather than scaled.
-    const image = new GrayImage(width, height, 0);
-    board.composeInto(image, 0, 0);
-    return image;
+    return paintLiveBoard(this.board, ctx);
   }
 
   handleInput(event: InputEvent, ctx: LayerContext): void {
@@ -374,6 +370,97 @@ class GlancePreviewLayer implements Layer {
     this.board.stop();
     this.onClose();
   }
+}
+
+/** Paint the real board at 1:1, exactly like Preview and the sleep surface. */
+function paintLiveBoard(board: GlanceBoard, ctx: LayerContext): GrayImage {
+  const { width, height } = ctx.stack.getBaseSize();
+  const painted = board.paint();
+  if (painted.width === width && painted.height === height) return painted;
+  // A viewport of another size (a per-app display override) shows the board
+  // top-left, cropped or padded, rather than scaled.
+  const image = new GrayImage(width, height, 0);
+  painted.composeInto(image, 0, 0);
+  return image;
+}
+
+/**
+ * The permanent switcher window: the live Glanceboard itself, not its
+ * configuration page. Widgets run only while this window is foreground and
+ * the display is on; the sleep-time GlanceHost owns a separate board.
+ */
+class PinnedGlanceboardLayer implements Layer {
+  private readonly board: GlanceBoard;
+  private active = false;
+
+  constructor(requestRender: () => void) {
+    this.board = new GlanceBoard(requestRender);
+  }
+
+  setActive(active: boolean): void {
+    if (active === this.active) return;
+    this.active = active;
+    if (active) this.board.start();
+    else this.board.stop();
+  }
+
+  paint(ctx: LayerContext): GrayImage {
+    return paintLiveBoard(this.board, ctx);
+  }
+
+  handleInput(event: InputEvent): void {
+    if (event.type === "double-click") shell.yieldFocusToSidebar();
+  }
+
+  stop(): void {
+    this.active = false;
+    this.board.stop();
+  }
+}
+
+/**
+ * Create the pinned live-board window. It is registered at boot immediately
+ * after Apps and deliberately has no settings menu and no close action.
+ */
+export function createPinnedGlanceboardWindow(options: InProcessAppOptions): InProcessWindow {
+  let foreground = false;
+  let screenOn = true;
+  const layer = new PinnedGlanceboardLayer(() => app.requestRender());
+  const heightMode = () => glanceLayoutSetting.get() === "2x3" ? "max" as const : "medium" as const;
+  const syncActive = () => layer.setActive(foreground && screenOn);
+  const app = createInProcessWindow({
+    appId: "glanceboard",
+    windowId: PINNED_GLANCEBOARD_WINDOW_ID,
+    title: "Glanceboard",
+    iconLetter: "Gb",
+    icon: "eye",
+    closeable: false,
+    heightMode: heightMode(),
+    actions: options.actions,
+    baseLayer: layer,
+    submitFrame: options.submitFrame,
+    setSurfaceVisible: options.setSurfaceVisible,
+    removeSurface: options.removeSurface,
+    reconfigureSurface: options.reconfigureSurface,
+    onForegroundChanged: (value) => {
+      foreground = value;
+      syncActive();
+    },
+    setScreenOn: (value) => {
+      screenOn = value;
+      syncActive();
+    },
+    onClosed: () => {
+      layer.stop();
+      unsubscribeSettings();
+      options.onClosed();
+    },
+  });
+  const unsubscribeSettings = onAnySettingChanged(() => {
+    app.setHeightMode(heightMode());
+    if (foreground && screenOn) app.requestRender();
+  });
+  return app;
 }
 
 export function createGlanceboardAppWindow(options: InProcessAppOptions): InProcessWindow {

@@ -411,9 +411,8 @@ class ShellAlertLayer implements Layer {
       ? new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK)
       : paintBelow();
     const font = getDefaultSmallFont();
-    // Positioned within the min-height window band, like the other shell overlays.
-    // Standalone: centered on the screen instead, there is no band to ride.
-    const alertY = this.standalone ? Math.round((screenHeight() - ALERT_H) / 2) : minWindowTop() + ALERT_Y;
+    // Standalone hides the interface but stays in the same Display-mode band.
+    const alertY = minWindowTop() + ALERT_Y;
     image.fillRect(ALERT_X, alertY, alertW(), ALERT_H, 1);
     image.drawRect(ALERT_X, alertY, alertW(), ALERT_H, 90);
     image.drawText(font, ALERT_X + 16, alertY + 12, "OpenClaw", 200);
@@ -506,7 +505,7 @@ class Shell {
   // App-posted notifications that are open or queued, by key.
   private readonly appNotifications = new Map<string, AppNotification>();
   private readonly notificationModals = new NotificationModalQueue<NotificationPopup>({
-    open: (notificationKey) => this.pushNotificationModal(notificationKey),
+    open: (notificationKey, standalone) => this.pushNotificationModal(notificationKey, standalone),
     isAvailable: (notificationKey) => {
       if (this.appNotifications.has(notificationKey)) return true;
       const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
@@ -620,6 +619,12 @@ class Shell {
    * that one frame, the exact complaint this path exists to fix.
    */
   private wakeForStandalone(): void {
+    this.beginStandaloneOpening();
+    this.wake("sidebar");
+  }
+
+  /** Start hiding retained surfaces before a wake can unblank them. */
+  private beginStandaloneOpening(): void {
     if (!this.lastStandaloneActive) {
       this.lastStandaloneActive = true;
       this.config.onStandaloneChanged?.(true);
@@ -628,7 +633,21 @@ class Shell {
     // layer; hold the state through that gap so the diff below cannot read
     // "no standalone layer yet" and hand the interface back for one frame.
     this.standaloneOpening = true;
-    this.wake("sidebar");
+  }
+
+  /**
+   * The controller resumes EvenHub before delivering a dark-screen wakeword.
+   * Mark that wake as standalone first, then let openAssistantDictation consume
+   * the marker after the wake barrier. This keeps retained windows and menus
+   * out of the very first visible frame.
+   */
+  prepareAssistantStandaloneWake(): boolean {
+    if (this.screenOn || wakeWordActionSetting.get() !== "voice-input") return false;
+    if (this.foregroundWindow()?.isVoiceCapturing?.()) return false;
+    if (this.activeVoiceLayer || this.activeDictationBar || this.activeKeyboardLayer) return false;
+    this.assistantStandalonePrepared = true;
+    this.beginStandaloneOpening();
+    return true;
   }
 
   /** Release the open-time hold once the standalone layer is pushed (or the
@@ -641,6 +660,23 @@ class Shell {
 
   /** True between a standalone open's wake and its layer push (see above). */
   private standaloneOpening = false;
+  private assistantStandalonePrepared = false;
+
+  private takeAssistantStandaloneWake(): boolean {
+    const prepared = this.assistantStandalonePrepared;
+    this.assistantStandalonePrepared = false;
+    return prepared;
+  }
+
+  private cancelAssistantStandaloneWake(): void {
+    if (!this.assistantStandalonePrepared) return;
+    this.assistantStandalonePrepared = false;
+    // The controller has already made this a logical wake. If no standalone
+    // layer can consume it, go back to sleep instead of revealing the retained
+    // app/menu when the opening hold is released.
+    if (this.screenOn) this.sleep();
+    else this.releaseStandaloneOpening();
+  }
 
   // Ambient (encounter) cards live in the chrome paint; a posted or expired
   // card repaints the shell surface so it appears and disappears on time.
@@ -1009,8 +1045,14 @@ class Shell {
    * (matching the old sleep-popup behavior).
    */
   openNotificationModal(notificationKey: string, wokeScreen: boolean): void {
-    if (!this.screenOn) return;
-    this.notificationModals.post(notificationKey, wokeScreen);
+    // Do not wake the regular interface first. Cooling starts before wake so
+    // the retained app/menu surfaces cannot enter the first lit frame.
+    if (!this.screenOn) {
+      if (!wokeScreen) return;
+      this.wakeForStandalone();
+    }
+    const standalone = wokeScreen || this.standaloneActive() || this.standaloneOpening;
+    this.notificationModals.post(notificationKey, wokeScreen, standalone);
     this.config.requestShellRender();
   }
 
@@ -1035,11 +1077,11 @@ class Shell {
    */
   postAppNotification(notification: AppNotification): void {
     this.appNotifications.set(notification.key, notification);
-    const wokeScreen = this.screenOn ? false : this.wake("sidebar");
+    const wokeScreen = !this.screenOn;
     this.openNotificationModal(notification.key, wokeScreen);
   }
 
-  private pushNotificationModal(notificationKey: string): NotificationPopup {
+  private pushNotificationModal(notificationKey: string, standalone: boolean): NotificationPopup {
     const appNotification = this.appNotifications.get(notificationKey);
     const close = () => this.closeNotificationModal(popup, notificationKey);
     const content = appNotification
@@ -1054,6 +1096,7 @@ class Shell {
           this.appNotifications.delete(notificationKey);
           this.notificationModals.removed(popup, this.screenOn);
         },
+        standalone,
       ),
     };
     this.stack.push(popup.modal);
@@ -1152,14 +1195,18 @@ class Shell {
     // Even AI app never launches, so the firmware does not power the display
     // for us either -- actions that need it wake the screen themselves.
     if (event.type === "wakeword") {
-      if (this.foregroundWindow()?.isVoiceCapturing?.()) return { shell: true, window: false };
+      if (this.foregroundWindow()?.isVoiceCapturing?.()) {
+        this.cancelAssistantStandaloneWake();
+        return { shell: true, window: false };
+      }
       const action = wakeWordActionSetting.get();
       if (action === "off") {
+        this.cancelAssistantStandaloneWake();
         return { shell: false, window: false };
       }
 
       this.lastInputAtMs = Date.now();
-      const wokeScreen = !this.screenOn && this.wake("sidebar");
+      const wokeScreen = action === "turn-screen-on" && !this.screenOn && this.wake("sidebar");
       if (action === "voice-input" && !this.activeVoiceLayer && !this.activeDictationBar && !this.activeKeyboardLayer) {
         if (this.assistantLayer) {
           // The assistant overlay is up; a wakeword continues that conversation.
@@ -1708,16 +1755,29 @@ class Shell {
     /** Fires instead of onSent when the bar closed without sending. */
     onClosed?: () => void;
   } = {}): boolean {
-    if (this.activeDictationBar || this.activeVoiceLayer || this.activeKeyboardLayer) return false;
-    if (this.foregroundWindow()?.isVoiceCapturing?.()) return false;
+    const preparedStandalone = this.takeAssistantStandaloneWake();
+    if (this.activeDictationBar || this.activeVoiceLayer || this.activeKeyboardLayer) {
+      if (preparedStandalone) {
+        if (this.screenOn) this.sleep();
+        else this.releaseStandaloneOpening();
+      }
+      return false;
+    }
+    if (this.foregroundWindow()?.isVoiceCapturing?.()) {
+      if (preparedStandalone) {
+        if (this.screenOn) this.sleep();
+        else this.releaseStandaloneOpening();
+      }
+      return false;
+    }
     if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
-      this.showAssistantNoLink();
+      this.showAssistantNoLink(preparedStandalone);
       return false;
     }
     // Locked glasses: the bar arrives standalone over a dark screen, the
     // interface is not raised behind it (spec 2, mockup 11).
-    const standalone = !this.screenOn;
-    if (standalone) this.wakeForStandalone();
+    const standalone = preparedStandalone || !this.screenOn;
+    if (standalone && !this.screenOn) this.wakeForStandalone();
     const autoSend = options.autoSend ?? assistantSkipConfirmationSetting.get();
     const layer = new DictationBarLayer({
       actions: this.config.actions,
@@ -1736,7 +1796,13 @@ class Shell {
           this.noteUserActivity();
         }
         if (outcome.action === "sent") (options.onSent ?? ((text) => this.sendToAssistant(text)))(outcome.text);
-        else options.onClosed?.();
+        else {
+          options.onClosed?.();
+          // This bar alone woke a dark screen. Closing/cancelling it must
+          // blank before standalone cooling is released, otherwise the
+          // retained app/menu appears and the wake becomes a normal unlock.
+          if (standalone && this.screenOn) this.sleep();
+        }
       },
       autoSend,
     });
@@ -2108,13 +2174,17 @@ class Shell {
 
   /** The no-link refusal frame (spec 2): the bar and the chat window both
    * refuse with this, in the bar's place. */
-  private showAssistantNoLink(): void {
-    const standalone = !this.screenOn;
-    if (standalone) this.wakeForStandalone();
+  private showAssistantNoLink(forceStandalone = false): void {
+    const standalone = forceStandalone || !this.screenOn;
+    if (standalone && !this.screenOn) this.wakeForStandalone();
     const refusal = new DictationRefusalLayer(
       this.config.actions,
       () => interfaceBottom("ai-chat"),
       () => {
+        if (standalone && this.screenOn) {
+          this.sleep();
+          return;
+        }
         this.stack.popIfTop((top) => top === refusal);
         this.config.requestShellRender();
       },

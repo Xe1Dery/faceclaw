@@ -9,7 +9,7 @@
  */
 export interface NotificationModalHost<M> {
   /** Create and stack a modal showing this notification. */
-  open(notificationKey: string): M;
+  open(notificationKey: string, standalone: boolean): M;
   /** Whether a queued notification is still worth opening (not dismissed, popups still on). */
   isAvailable(notificationKey: string): boolean;
   /** Put the screen back to sleep. */
@@ -20,6 +20,8 @@ interface Entry {
   readonly notificationKey: string;
   /** Whether this notification woke the screen, so closing the last modal sleeps again. */
   readonly wokeScreen: boolean;
+  /** Whether the modal must keep all regular interface surfaces hidden. */
+  readonly standalone: boolean;
 }
 
 export class NotificationModalQueue<M> {
@@ -33,15 +35,15 @@ export class NotificationModalQueue<M> {
    * modal. A repost of the open notification needs nothing: its modal repaints
    * from the live notification.
    */
-  post(notificationKey: string, wokeScreen: boolean): void {
+  post(notificationKey: string, wokeScreen: boolean, standalone = wokeScreen): void {
     if (this.current) {
       if (this.current.notificationKey !== notificationKey
           && !this.queued.some((entry) => entry.notificationKey === notificationKey)) {
-        this.queued.push({ notificationKey, wokeScreen });
+        this.queued.push({ notificationKey, wokeScreen, standalone });
       }
       return;
     }
-    this.current = { modal: this.host.open(notificationKey), notificationKey, wokeScreen };
+    this.current = { modal: this.host.open(notificationKey, standalone), notificationKey, wokeScreen, standalone };
   }
 
   /**
@@ -53,7 +55,7 @@ export class NotificationModalQueue<M> {
     const current = this.current;
     if (current?.modal !== modal) return;
     this.current = null;
-    if (!this.openNext(current.wokeScreen) && current.wokeScreen) {
+    if (!this.openNext(current.wokeScreen, current.standalone) && current.wokeScreen) {
       this.host.sleep();
     }
   }
@@ -71,7 +73,7 @@ export class NotificationModalQueue<M> {
       this.queued.length = 0;
       return;
     }
-    this.openNext(current.wokeScreen);
+    this.openNext(current.wokeScreen, current.standalone);
   }
 
   /**
@@ -90,11 +92,15 @@ export class NotificationModalQueue<M> {
     return this.queued.map((entry) => entry.notificationKey);
   }
 
-  private openNext(wokeScreen: boolean): boolean {
+  private openNext(wokeScreen: boolean, standalone: boolean): boolean {
     while (this.queued.length > 0) {
       const next = this.queued.shift()!;
       if (!this.host.isAvailable(next.notificationKey)) continue;
-      this.post(next.notificationKey, wokeScreen || next.wokeScreen);
+      this.post(
+        next.notificationKey,
+        wokeScreen || next.wokeScreen,
+        standalone || next.standalone,
+      );
       return true;
     }
     return false;

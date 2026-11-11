@@ -109,7 +109,9 @@ export class ReminderLayer implements Layer {
     const x = 32;
     const width = screenWidth() - 64;
     const height = 128;
-    const rest = this.standalone ? Math.round((screenHeight() - height) / 2) : minWindowTop() + 80;
+    // Standalone hides the interface but does not abandon its Display-mode
+    // geometry: the frame stays where the unlocked one rests.
+    const rest = minWindowTop() + 80;
     // Unlocked frames slide up from the screen's bottom edge to their rest
     // place (spec 4); standalone ones simply appear with the brightness rise.
     const y = Math.round(rest + (1 - this.slide) * (screenHeight() - height - rest));

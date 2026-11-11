@@ -138,10 +138,14 @@ function background() {
   return img;
 }
 
-/** Mic glyph: capsule + stand, ~10x14 at (x, y). */
-function drawMic(img, x, y, value) {
-  img.fillRect(x + 3, y, 4, 10, value);
-  img.fillRect(x + 2, y + 1, 6, 8, value);
+/** Mic glyph: filled while recording, outline-only once the phrase is fixed. */
+function drawMic(img, x, y, value, filled = true) {
+  if (filled) {
+    img.fillRect(x + 3, y, 4, 10, value);
+    img.fillRect(x + 2, y + 1, 6, 8, value);
+  } else {
+    img.drawRect(x + 2, y, 6, 10, value);
+  }
   img.drawLine(x + 1, y + 6, x + 9, y + 6, value);
   img.drawLine(x + 1, y + 7, x + 9, y + 7, value);
   img.drawLine(x + 5, y + 9, x + 5, y + 13, value);
@@ -165,7 +169,7 @@ function dictationBar(img, opts) {
   const y = barBottom() - height;
   img.fillRect(x, y, BAR_W, height, 1);
   img.drawRect(x, y, BAR_W, height, 120);
-  drawMic(img, x + 14, y + 10, opts.text ? 150 : 235);
+  drawMic(img, x + 14, y + 10, 235, !opts.controls);
   if (shown.length) {
     shown.forEach((line, i) => medium.drawText(img, x + 36, y + 14 + i * BAR_LINE, line, 235));
   } else {
@@ -203,7 +207,7 @@ function chatWindow(img, opts) {
     const user = msg.role === "user";
     const text = user ? "> " + msg.text : msg.text;
     const lines = wrapText(medium, text, width - 28);
-    const value = user ? 170 : 235;
+    const value = 235;
     for (const line of lines) {
       if (y + medium.lineHeight > top + height - (opts.actions || opts.hint || opts.newBelow ? 24 : 20)) break;
       medium.drawText(img, x + 14, y, line, value);
@@ -236,7 +240,8 @@ function popup(img, opts) {
   const x = 32;
   const width = G2_LENS_WIDTH - 64;
   const height = 128;
-  const y = opts.overInterface ? 140 : ((G2_LENS_HEIGHT - SWITCHER_ROW - height) / 2) | 0;
+  // Standalone removes the background, not the chosen Display-mode geometry.
+  const y = bandTop() + 80;
   img.fillRect(x, y, width, height, 1);
   img.drawRect(x, y, width, height, 90);
   medium.drawText(img, x + 14, y + 10, opts.title, 200);
@@ -311,7 +316,7 @@ shot(
 shot(
   "03-bar-controls",
   "Диктовка окончена - появились подсказки",
-  "Подсказки символами, как в остальном интерфейсе: ● тап - отправить, ▲▼ скролл - заново, ●● двойной тап - закрыть.",
+  "После окончания записи микрофон меняется с залитого на контурный. Подсказки: ● отправить, ▲▼ заново, ●● закрыть.",
   (img) => {
     background().composeInto(img, 0, 0);
     dictationBar(img, {
@@ -410,7 +415,7 @@ shot(
 shot(
   "08-popup-locked",
   "Уведомление на заблокированных очках",
-  "Никакого интерфейса за окном - только рамка уведомления, по центру, с переходом яркости.",
+  "Никакого интерфейса за окном. Рамка сохраняет позицию текущего Display mode и появляется с переходом яркости.",
   (img) => {
     popup(img, {
       title: "Напоминание",
