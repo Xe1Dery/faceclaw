@@ -7,10 +7,12 @@ import { SystemCardWidget, systemCardSettingsMenuItems } from "./system-card";
 import { T3CodeWidget } from "./t3code-widget";
 import { TerminalWidget } from "./terminal-widget";
 import { HealthWidget } from "./health-widget";
+import { TickTickWidget } from "./ticktick-widget";
 
 /** Every widget a board slot can hold. */
 export const GLANCE_WIDGETS: readonly GlanceWidgetDefinition[] = [
   { id: "system-card", label: "System card", settingsMenuItems: systemCardSettingsMenuItems, create: () => new SystemCardWidget() },
+  { id: "ticktick", label: "TickTick", tall: true, create: () => new TickTickWidget() },
   { id: "calendar", label: "Calendar", tall: true, create: () => new CalendarWidget() },
   { id: "terminal", label: "Terminal", tall: true, create: () => new TerminalWidget() },
   { id: "t3code", label: "T3 Code", tall: true, create: () => new T3CodeWidget() },

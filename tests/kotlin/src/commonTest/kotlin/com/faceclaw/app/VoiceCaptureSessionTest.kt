@@ -295,7 +295,7 @@ class VoiceCaptureSessionTest {
     @Test
     fun endpointingFiresOnceAfterSpeechThenSilence() {
         val platform = ShiftedPlatform(testPlatform())
-        val script = List(8) { 0 } + List(10) { 3000 } + List(24) { 0 }
+        val script = List(8) { 0 } + List(10) { 3000 } + List(34) { 0 }
         val host = FakeHost(platform, mic = ScriptedMic(script))
         val events = Events()
         val session = session(host, platform, "voice-test-endpoint")

@@ -6,6 +6,7 @@ const {
   DENSE_BATTERY_BLOCK_HEIGHT,
   drawBattery,
   drawDenseBatteries,
+  drawDensePercentageBatteries,
 } = require('../.test-build/app/graphics/battery.js');
 
 const RIGHT = 120;
@@ -83,5 +84,42 @@ test('an odd count leaves the first indicator alone, vertically centered', () =>
 test('no indicators draws nothing', () => {
   const image = new GrayImage(RIGHT + 8, 32, 0);
   assert.equal(drawDenseBatteries(image, [], RIGHT, TOP), RIGHT);
+  assert.ok(image.pixels.every((value) => value === 0));
+});
+
+test('dense percentages keep the exact dense footprint and centre charging ink', () => {
+  const items = [
+    { device: 'phone', percent: 80, charging: false },
+    { device: 'watch', percent: 35, charging: true },
+    { device: 'glasses', percent: 60, charging: false },
+    { device: 'ring', percent: 100, charging: false },
+  ];
+  const gauges = new GrayImage(RIGHT + 8, 32, 0);
+  const percentages = new GrayImage(RIGHT + 8, 32, 0);
+  const denseLeft = drawDenseBatteries(gauges, items, RIGHT, TOP);
+  const percentageLeft = drawDensePercentageBatteries(percentages, items, RIGHT, TOP);
+  assert.equal(percentageLeft, denseLeft, 'both modes have the same left and right edges');
+
+  const watchSlot = gaugeAt(gauges, 35, true);
+  const darkInk = [];
+  for (let y = watchSlot.y; y < watchSlot.y + 10; y++) {
+    for (let x = watchSlot.x; x < watchSlot.x + BATTERY_ICON_WIDTH; x++) {
+      const value = percentages.getPixel(x, y);
+      if (value === 1) darkInk.push({ x, y });
+      if (y === watchSlot.y || y === watchSlot.y + 9) assert.equal(value, 0, 'inversion leaves one clear row above and below');
+      else assert.ok(value === 1 || value === 200, `charging slot value ${value}`);
+    }
+  }
+  const textTop = Math.min(...darkInk.map((pixel) => pixel.y));
+  const textBottom = Math.max(...darkInk.map((pixel) => pixel.y));
+  assert.deepEqual([textTop, textBottom], [watchSlot.y + 2, watchSlot.y + 7]);
+  assert.equal((textTop + textBottom) / 2, watchSlot.y + 4.5, 'text is centred on the 10px device icon');
+  assert.equal(((watchSlot.y + 1) + (watchSlot.y + 8)) / 2, watchSlot.y + 4.5,
+    'the inversion rectangle has the same centre');
+});
+
+test('dense percentages draw nothing for an empty device list', () => {
+  const image = new GrayImage(RIGHT + 8, 32, 0);
+  assert.equal(drawDensePercentageBatteries(image, [], RIGHT, TOP), RIGHT);
   assert.ok(image.pixels.every((value) => value === 0));
 });

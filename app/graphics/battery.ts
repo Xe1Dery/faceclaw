@@ -143,6 +143,29 @@ const DENSE_ROW_GAP = 2;
 const DENSE_ICON_GAP = 3;
 const DENSE_COLUMN_GAP = 8;
 
+/** Fixed micro-font used only by the same-footprint dense percentage mode.
+ * Six ink rows sit at rows 2..7 of the 10px indicator slot. A charging
+ * inversion occupies rows 1..8, so the text, inversion and 10px device icon
+ * all share the same vertical centre. Four 4px glyphs plus 1px gaps fit the
+ * existing 21px gauge slot even for `100%`. */
+const DENSE_PERCENT_GLYPHS: Readonly<Record<string, readonly string[]>> = {
+  "0": [".##.", "#..#", "#..#", "#..#", "#..#", ".##."],
+  "1": ["..#.", ".##.", "..#.", "..#.", "..#.", ".###"],
+  "2": [".##.", "#..#", "...#", ".#..", "#...", "####"],
+  "3": ["###.", "...#", ".##.", "...#", "...#", "###."],
+  "4": ["#..#", "#..#", "####", "...#", "...#", "...#"],
+  "5": ["####", "#...", "###.", "...#", "...#", "###."],
+  "6": [".##.", "#...", "###.", "#..#", "#..#", ".##."],
+  "7": ["####", "...#", "..#.", ".#..", ".#..", ".#.."],
+  "8": [".##.", "#..#", ".##.", "#..#", "#..#", ".##."],
+  "9": [".##.", "#..#", ".###", "...#", "...#", ".##."],
+  "%": ["#..#", "...#", "..#.", ".#..", "#...", "#..#"],
+};
+const DENSE_PERCENT_GLYPH_WIDTH = 4;
+const DENSE_PERCENT_GLYPH_HEIGHT = 6;
+const DENSE_PERCENT_GLYPH_GAP = 1;
+const DENSE_PERCENT_VALUE = 200;
+
 /** Height of a dense block: two indicator rows and the gap between them. */
 export const DENSE_BATTERY_BLOCK_HEIGHT = 2 * ICON_HEIGHT + DENSE_ROW_GAP;
 
@@ -180,6 +203,57 @@ export function drawDenseBatteries(
     x -= DENSE_COLUMN_GAP;
   }
   return x + DENSE_COLUMN_GAP;
+}
+
+/**
+ * Dense percentage style: identical columns, device-icon slots, row height,
+ * gaps and total footprint to `drawDenseBatteries`, but the 21px gauge slot
+ * contains an exact percentage in a compact fixed micro-font. Charging uses
+ * the same inverted-value convention as the regular percentage mode.
+ */
+export function drawDensePercentageBatteries(
+  image: GrayImage,
+  items: readonly DenseBatteryItem[],
+  right: number,
+  top: number,
+): number {
+  if (!items.length) return right;
+  let x = right;
+  for (let end = items.length; end > 0; end -= 2) {
+    const column = items.slice(Math.max(0, end - 2), end);
+    const slotWidth = Math.max(...column.map((item) => DEVICE_ICONS[item.device].width));
+    x -= slotWidth + DENSE_ICON_GAP + BATTERY_ICON_WIDTH;
+    const firstRowTop = column.length === 2 ? top : top + (((DENSE_BATTERY_BLOCK_HEIGHT - ICON_HEIGHT) / 2) | 0);
+    for (let row = 0; row < column.length; row++) {
+      const item = column[row]!;
+      const rowTop = firstRowTop + row * (ICON_HEIGHT + DENSE_ROW_GAP);
+      const icon = DEVICE_ICONS[item.device];
+      image.bitBlt(icon, x + (((slotWidth - icon.width) / 2) | 0), rowTop, { transparentZero: true });
+      drawDensePercentageValue(image, x + slotWidth + DENSE_ICON_GAP, rowTop, item);
+    }
+    x -= DENSE_COLUMN_GAP;
+  }
+  return x + DENSE_COLUMN_GAP;
+}
+
+function drawDensePercentageValue(image: GrayImage, x: number, rowTop: number, item: DenseBatteryItem): void {
+  const percent = Math.max(0, Math.min(100, Math.round(item.percent)));
+  const text = `${percent}%`;
+  const textWidth = text.length * DENSE_PERCENT_GLYPH_WIDTH + (text.length - 1) * DENSE_PERCENT_GLYPH_GAP;
+  const textX = x + (((BATTERY_ICON_WIDTH - textWidth) / 2) | 0);
+  const textY = rowTop + ((ICON_HEIGHT - DENSE_PERCENT_GLYPH_HEIGHT) >> 1);
+  if (item.charging) image.fillRect(x, rowTop + 1, BATTERY_ICON_WIDTH, ICON_HEIGHT - 2, DENSE_PERCENT_VALUE);
+  let glyphX = textX;
+  for (const char of text) {
+    const rows = DENSE_PERCENT_GLYPHS[char];
+    if (!rows) continue;
+    for (let gy = 0; gy < rows.length; gy++) {
+      for (let gx = 0; gx < DENSE_PERCENT_GLYPH_WIDTH; gx++) {
+        if (rows[gy]![gx] === "#") image.fillRect(glyphX + gx, textY + gy, 1, 1, item.charging ? 1 : DENSE_PERCENT_VALUE);
+      }
+    }
+    glyphX += DENSE_PERCENT_GLYPH_WIDTH + DENSE_PERCENT_GLYPH_GAP;
+  }
 }
 
 /** The width drawDenseBatteries would take for `items` (0 when empty), to place the block before drawing it. */

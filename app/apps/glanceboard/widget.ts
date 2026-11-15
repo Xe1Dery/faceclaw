@@ -1,5 +1,6 @@
 import { type GrayImage } from "../../graphics/image";
 import { type MenuItem } from "../../ui/menu";
+import { type InputEvent } from "../../ui/gestures";
 
 /**
  * A Glanceboard widget: a small self-contained view that paints into a slot
@@ -26,9 +27,15 @@ export interface GlanceWidget {
    * texture-cache wire path.
    */
   paint(image: GrayImage): void;
+  /**
+   * Optional interaction while the permanent Glanceboard window has focus.
+   * Sleep-time Glanceboard presentations stay read-only. Return true when
+   * the gesture belongs to this widget.
+   */
+  handleInput?(event: InputEvent): boolean | Promise<boolean>;
 }
 
-export type GlanceWidgetId = "system-card" | "nightscout" | "compass" | "music" | "calendar" | "terminal" | "t3code" | "health";
+export type GlanceWidgetId = "system-card" | "ticktick" | "nightscout" | "compass" | "music" | "calendar" | "terminal" | "t3code" | "health";
 
 export type GlanceWidgetDefinition = {
   id: GlanceWidgetId;

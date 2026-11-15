@@ -644,20 +644,249 @@ described in the 825-828 entries plus this reminder-answer fix, and supersedes
 them. In-place update over the established local debug lineage; no GitHub
 Release or upload was made.
 
+### TickTick hybrid Android notifications / APK 830 (2026-11-12)
+
+Routine reminder delivery now belongs to TickTick itself. Faceclaw recognizes
+the TickTick Android packages through the existing Notification Listener and
+substitutes the confirmed compact G2 frame: one tap invokes TickTick's native
+Done notification action, double tap uses Android notification snooze for five
+minutes, and ring scroll opens the shared streaming dictation bar. Deterministic
+`done` and snooze intervals stay local; ambiguous text opens a normal Nano chat
+as `По задаче TickTick «<title>»: <command>`. The custom-profile registry is
+extensible and all non-TickTick notifications retain the old generic UI.
+
+Dark-screen dictation now inherits an already-standalone notification layer,
+so the normal interface remains cooled while Zipformer partials are shown.
+Local voice capture is allowed when Nano is offline; only complex escalation
+needs the bridge. Android snooze was added to the Kotlin notification listener
+and guarded for API 26+. Full design, server migration and real-device
+acceptance steps are in `notes/ticktick-hybrid-reminders.md`.
+
+Nano changes live in the separate `.tooling/nano_assistant` checkout:
+`openclaw/AGENTS.reminder.md` forbids routine TickTick polling/delivery but
+preserves MCP task management and explicit one-shot reminders for direct asks
+or concrete promises. Its README documents disabling/removing
+`nano-reminder-scan`. Nano tests pass 40/40.
+
+`dist/Faceclaw-0.8.7-local-830.apk`: package `com.faceclaw.app`, versionCode
+830, certificate SHA-256 `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256 `6f2f01197be85e3c2c0c02dc47afd65002e0fa5ca9d3e1c80a882810f42aed54`.
+The Android/Kotlin release build and signature verification pass. The full JS
+suite has only the same two known Windows harness failures (`python3` command
+missing and path separators). No GitHub release/upload was made.
+
+### Persistent TickTick decision / APK 831 (2026-11-12)
+
+An unresolved TickTick popup now survives screen timeout. The next display
+wake reopens it standalone before retained app surfaces can appear; otherwise
+a 60-second timer raises it again. It repeats until native Done, Android
+snooze, successful Nano handoff, or Android notification removal. Multiple
+queued TickTick notifications keep independent retry timers.
+
+Dictation remains stacked over the popup. The popup frame keeps its size but
+hides its own gesture row while the bar is up; the bar shows its controls from
+the first recording frame. Empty recognition and failed Nano handoff close the
+bar and restore the popup controls. Successful handoff removes the popup
+without sleeping the newly opened chat. An inherited standalone notification
+continues owning the screen when dictation closes, so the old interface is not
+revealed.
+
+Focused persistence/dictation/queue/shell suite passes 70/70; TypeScript,
+oxlint, NativeScript webpack, Kotlin/Gradle and APK signature verification
+pass. The full JS suite retains only the two known Windows harness failures.
+
+`dist/Faceclaw-0.8.7-local-831.apk`: package `com.faceclaw.app`, versionCode
+831, certificate SHA-256 `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256 `d6505c1a10f986e82f7fe632e73e27bfc50b63fc68f6ef693cade432d21ee3ed`.
+
+### Telegram RemoteInput, scroll boundaries and slow speech / APK 833 (2026-11-12)
+
+Custom notification profiles now include Telegram (`org.telegram.messenger*`).
+Tap-then-hold marks read through the native notification action, double tap
+dismisses, plain long-press opens local dictation, and confirmed text is sent
+through Android `RemoteInput`. Telegram frames size to content, cap themselves
+to the active Display-mode band, and scroll only their body under a fixed title
+and controls. TickTick voice moved from scroll to plain long-press; TickTick has
+no body scrolling.
+
+OpenClaw now clips complete history lines to its body, so scrollback cannot
+enter the fixed title. The scroll hint is always present and named
+`прокрутка`; one inset rule separates a completed agent answer from the next
+user request. Header rules reach the frame edges and there are no rules above
+control rows. Hands-free endpoint trailing silence increased from 900 to
+1400 ms for slower speech; the 30-second hard cap is unchanged.
+
+Focused TypeScript suite passes 95/95; full Kotlin Android host suite passes
+370/370; NativeScript/Gradle APK build and signature verification pass.
+`dist/Faceclaw-0.8.7-local-833.apk`: package `com.faceclaw.app`, versionCode
+833, certificate SHA-256 `1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256 `8e4a2b95dcb2fbcc9bec0c179f8b978c4f1d906888d0a6d98702d2cc71122bd6`.
+No GitHub release or upload was made.
+
+### Telegram source header and OpenClaw chrome / APK 834 (2026-11-13)
+
+Telegram no longer synthesizes `sender - message` into one line. Its fixed
+title band now uses the 25x25 grayscale `smallIcon` extracted from the exact
+Android notification by `readNotificationIconByKey`, followed by the sender;
+the scrollable body contains only the message. Double tap settles and closes
+the G2 popup without calling `dismissNotification`, so the Telegram
+notification remains in the phone shade. Tap-then-hold still invokes Telegram's
+native Mark as read action, which may naturally update/remove the notification.
+
+Custom-notification and OpenClaw titles use measured ink centering within their
+28px header bands. The OpenClaw overlay redraws a continuous rectangular frame
+on its own top plane, avoiding the opaque panel cutting the lower chrome's
+corner pixels. A double tap that explicitly closes OpenClaw now also sleeps the
+display immediately instead of exposing the retained launcher/application.
+
+TypeScript compilation passes and the focused shell/notification/dictation
+suite passes 97/97. NativeScript/Gradle APK build and signature verification
+pass. `dist/Faceclaw-0.8.7-local-834.apk`: package `com.faceclaw.app`,
+versionCode 834, certificate SHA-256
+`1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256
+`c79c028a350a9a73f88410b3a16a38afa5f8e5012ab663f4f636790be51383ae`.
+No GitHub release or upload was made.
+
+### Dense percentage batteries / APK 835 (2026-11-13)
+
+`BatteryDisplayMode` now includes `dense-percentage`, exposed in Settings as
+`Dense percentage`. It is available both in shell chrome and the Glanceboard
+system card. Device selection, two-items-per-column layout, row/column gaps and
+the total footprint are identical to `Dense`; only each 21x10 gauge slot is
+replaced by a fixed 4x6 micro-font percentage. `100%` fits without widening the
+block. Charging uses inverted text. The 10px device icon, 8px inversion box and
+6px text ink all have the same vertical centre: icon rows 0..9, box rows 1..8,
+text rows 2..7.
+
+TypeScript compilation, targeted oxlint and 45 focused battery/chrome/system
+card tests pass. NativeScript/Gradle APK build and signature verification pass.
+`dist/Faceclaw-0.8.7-local-835.apk`: package `com.faceclaw.app`, versionCode
+835, certificate SHA-256
+`1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256
+`3b83f5e97da41cb5d22909ef667b9bcb2951ba859d1888cc035caeba39d275df`.
+No GitHub release or upload was made.
+
+### Direct TickTick rescheduling and Glanceboard widget / APK 836 (2026-11-13)
+
+TickTick double tap and deterministic voice intervals no longer use Android
+notification snooze. `app/integrations/ticktick-mcp.ts` opens a short-lived
+official Streamable HTTP MCP session, matches the notification to an unfinished
+task by normalized exact title (and closest due time for duplicates), calls
+`update_task`, and only then dismisses the stale notification occurrence. A
+failed token, match or network operation leaves the decision window available.
+The token is a local password value at `Settings > API Keys > TickTick API
+token`; it is neither committed nor bundled.
+
+Glanceboard now offers a confirmed interactive `TickTick` checklist widget.
+It preserves the MCP Today / Next 7 Days response order, shows task time on the
+same row, scrolls the selected task, completes it on one tap, and switches view
+on short-then-long press. Two vertically adjacent TickTick slots merge into the
+tall variant. Input is routed only by the permanent pinned Glanceboard; the
+sleep-time board remains read-only.
+
+TypeScript and the relevant combined suite pass (89/89). The signed Android
+release build and APK signature verification pass. Full `npm test` still has
+only the unrelated Windows config-transfer harness failures (`python3` alias
+and POSIX-vs-Windows separator assumptions).
+
+`dist/Faceclaw-0.8.7-local-836.apk`: package `com.faceclaw.app`, versionCode
+836, certificate SHA-256
+`1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256
+`e166372c7adf59850f7c2920f03b1743165a57226aa3e5f5ffa3f1fa7d5da785`.
+No GitHub release, upload, install or data removal was performed.
+
+### Read-only cached TickTick Glanceboard / APK 837 (2026-11-13)
+
+The confirmed TickTick Glanceboard design supersedes the interactive APK 836
+version. It now shows only the official Today list in MCP order. Selection,
+row inversion, ring navigation, task completion, the Next 7 Days view and the
+control footer were removed. The widget exposes no input handler.
+
+The last successful Today response is cached at module scope, so stopping and
+restarting a board on display off/on immediately paints the cached tasks and
+does not issue another request while they are fresh. At one minute the visible
+rows stay in place while one deduplicated background request refreshes the
+cache. A temporary request failure retains the last good list. The cache is
+memory-only and a process restart performs a normal first load.
+
+TypeScript, targeted oxlint and the focused TickTick/Glanceboard/shell suite
+pass (41/41). NativeScript webpack, Kotlin/Gradle release build and APK
+signature verification pass.
+
+`dist/Faceclaw-0.8.7-local-837.apk`: package `com.faceclaw.app`, versionCode
+837, certificate SHA-256
+`1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256
+`1ba33039c29da7b765bdf401eef1a237d105fed53a5717d3cafe3c44e320d06b`.
+No GitHub release, upload, install or data removal was performed.
+
+### TickTick overdue tasks and checklist items / APK 838 (2026-11-14)
+
+The read-only Glanceboard widget now combines the official Today result with
+all open tasks from `filter_tasks(status:[0])`. Tasks whose due date is before
+the phone's local start of day appear first under `Просрочено`; duplicates are
+removed and the Today response keeps its server order. If an older MCP server
+rejects the all-open filter, the widget falls back to `last7day` instead of
+losing the whole card.
+
+Open checklist items from each task's `items[]` field are normalized as
+subtasks and painted beneath their parent with an indent and smaller checkbox.
+Items with completed status 1 or 2 are hidden. The widget remains read-only:
+there is still no selection, inversion, navigation, completion or period
+switching. The one-minute shared memory cache and stale-while-refresh behaviour
+from APK 837 are unchanged.
+
+TypeScript, targeted oxlint and the focused TickTick/Glanceboard/shell suite
+pass (42/42). NativeScript webpack, Kotlin/Gradle release build and APK
+signature verification pass.
+
+`dist/Faceclaw-0.8.7-local-838.apk`: package `com.faceclaw.app`, versionCode
+838, certificate SHA-256
+`1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256
+`04009c28fa049a027bdf3da1a29424eb9ab472bd3700c668777a0b740f015350`.
+No GitHub release, upload, install or data removal was performed.
+
+### Native TickTick notification snooze / APK 839 (2026-11-14)
+
+The direct MCP due-date path introduced in APK 836 failed against real TickTick
+notifications because title-based task matching and/or `update_task` was not
+reliable. TickTick double tap and deterministic voice intervals now use the
+already-present Android `NotificationListenerService.snoozeNotification(key,
+durationMs)` bridge. The requested minute count is passed directly in
+milliseconds. Android removes the current occurrence and reposts it after the
+interval; no TickTick token, MCP call or LLM is involved. Complex commands still
+open Nano normally.
+
+Synchronous popup action errors now have a three-second timer. The hint returns
+after the timer, and any new gesture clears the old error immediately, so a
+failed snooze cannot lock the notification until screen timeout. Voice snooze
+failures return a rejected submission to the existing dictation bar, which
+already shows the reason for three seconds and then restores the unresolved
+notification.
+
+The focused notification/dictation/shell suite passes 75/75. TypeScript,
+targeted oxlint, NativeScript webpack, Kotlin/Gradle release build and APK
+signature verification pass.
+
+`dist/Faceclaw-0.8.7-local-839.apk`: package `com.faceclaw.app`, versionCode
+839, certificate SHA-256
+`1b22f1a24be8a001427b07da1d0ec24f045a189b2055da52ee6a7baf3fd8d264`,
+APK SHA-256
+`27c53de040434bf881819667ac0c3fb43813cef41e19e39589dc9786a1abe7ce`.
+No GitHub release, upload, install or data removal was performed.
+
 ## Unfinished work — do this next
 
-0. **Interactive reminders (TickTick <-> OpenClaw, added 2026-11-08).** The phone side
-   is in this repo: `glasses.reminder_show` / `glasses.reminder_cancel`
-   (`app/assistant/reminder-tools.ts`, popup layer `app/ui/shell/reminder-layer.ts`,
-   classifier `app/assistant/reminder-intents.ts`; tests `tests/reminder-*.test.cjs`).
-   The controller lives OUTSIDE this repo, in `~/tools/llm/nano_assistant/`
-   (TickTick official MCP + OpenClaw script payload + courier protocol; see its
-   README for setup). Deployed and accepted through APK 812; v2 policy (grouped
-   popups, fixed 5m retry, courier-authored wording, REMINDER_EVENT v2) needs
-   APK 814+ + the regenerated payload + the new AGENTS.reminder.md block on the
-   OpenClaw host. Next: install 816 (814 + the redesigned System Card clock
-   face), redeploy payload, run the grouped-popup acceptance from the
-   nano_assistant README.
+0. **Accept the TickTick hybrid path on real Android + G2.** Disable
+   `nano-reminder-scan`, deploy the new Nano AGENTS block, install APK 839 and
+   run every step in `notes/ticktick-hybrid-reminders.md`. Confirm the real
+   TickTick package and Done action label before adding any fallback. Keep
+   `glasses.reminder_show` only for explicit Nano one-shot reminders; routine
+   TickTick due notifications must never pass through it.
 1. If a phone is connected, inspect the actually installed APK before installation
    (Linux equivalent of `scripts/inspect-installed-android.ps1`: `adb shell pm path com.faceclaw.app`,
    `adb pull`, then `aapt dump badging` + `apksigner verify --print-certs`). The reference APK/key
@@ -666,7 +895,7 @@ Release or upload was made.
 2. Install without deleting data:
 
    ```bash
-   adb install -r dist/Faceclaw-0.8.7-local-829.apk
+   adb install -r dist/Faceclaw-0.8.7-local-839.apk
    ```
 
    Manual transfer through cloud storage and opening the same APK on the phone is equivalent
@@ -690,7 +919,7 @@ Release or upload was made.
 
 ## Final delivery reminder
 
-The final response should point only to the newly built APK signed by `1b22...d264`, include its
+The final response should point only to the newly built APK 839 signed by `1b22...d264`, include its
 full SHA-256 file hash, state its package/version code, and explain that it can be installed over
 the existing debug build without data loss. Explicitly state that no GitHub Release or upload was
 performed.

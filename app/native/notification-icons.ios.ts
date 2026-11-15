@@ -25,7 +25,9 @@ export function iosNotificationMessage(): string { return active?.statusMessage 
 export function iosNotificationState(): AncsState { return active?.state ?? 'disconnected' }
 export function readActiveNotifications(maxNotifications = 50) { return active?.read(maxNotifications) ?? [] }
 export function invokeNotificationAction(key: string, index: number): boolean { return active?.action(key,index) ?? false }
+export function invokeNotificationReply(_key: string, _index: number, _text: string): boolean { return false }
 export function dismissNotification(key: string): boolean { return active?.dismiss(key) ?? false }
+export function snoozeNotification(_key: string, _durationMs: number): boolean { return false }
 export function onAndroidNotificationPosted(listener: (key: string) => void): () => void {
   listeners.add(listener); return () => { listeners.delete(listener) }
 }

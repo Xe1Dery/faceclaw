@@ -3,6 +3,7 @@ import { onAnySettingChanged } from "../../ui/dashboard-settings";
 import { glanceLayout, glanceShowLinesSetting, glanceSlotSettings } from "./glanceboard-settings";
 import { resolveGlanceRegions, slotDividers, type GlanceLayout, type GlanceRegion } from "./layout";
 import { type GlanceWidget } from "./widget";
+import { type InputEvent } from "../../ui/gestures";
 import { findGlanceWidget, glanceWidgetSpans } from "./widgets";
 
 /** Brightness of the hairlines between regions: the dimmest shade that survives 4bpp quantization. */
@@ -117,6 +118,15 @@ export class GlanceBoard {
       drawDividers(image, this.layout, this.regions.map((live) => live.region));
     }
     return image;
+  }
+
+  /** Route pinned-window input to the configured interactive widget. */
+  async handleInput(event: InputEvent): Promise<boolean> {
+    for (const live of this.regions) {
+      if (!live.widget?.handleInput) continue;
+      if (await live.widget.handleInput(event)) return true;
+    }
+    return false;
   }
 }
 

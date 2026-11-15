@@ -429,17 +429,27 @@ const shellScene = require('../.test-build/app/graphics/shell-scene.js');
 const displayList = require('../.test-build/app/graphics/display-list.js');
 const notificationTypes = require('../.test-build/app/native/notification-types.js');
 const ICON = notificationTypes.NOTIFICATION_ICON_SIZE;
-function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, trayIcons = [] } = {}) {
+function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, trayIcons = [], batteryMode = 'icon' } = {}) {
   const font = { lineHeight: 12, ascent: 10, measureText: (text) => text.length * 4,
     drawText: (image, x, y, text, value) => { for (let i = 0; i < text.length; i++) image.fillRect(x + i * 4, y + 2, 2, 6, value); } };
   let nextKey = 100;
   const requested = [];
+  const batteryCalls = { dense: 0, densePercentage: 0 };
   const settings = { get: () => 'always' };
+  const realBattery = require('../.test-build/app/graphics/battery.js');
+  const batteryModule = {
+    ...realBattery,
+    drawDenseBatteries(...args) { batteryCalls.dense += 1; return realBattery.drawDenseBatteries(...args); },
+    drawDensePercentageBatteries(...args) {
+      batteryCalls.densePercentage += 1;
+      return realBattery.drawDensePercentageBatteries(...args);
+    },
+  };
   const modules = {
     '../../graphics/shell-scene': shellScene, '../../graphics/image': graphics,
     '../../graphics/display-list': displayList, '../../graphics/ui-fonts': { getDefaultSmallFont: () => font, getDefaultMediumFont: () => font },
     '../../graphics/textwrap': require('../.test-build/app/graphics/textwrap.js'),
-    '../../graphics/battery': require('../.test-build/app/graphics/battery.js'),
+    '../../graphics/battery': batteryModule,
     './ambient-cards': { activeAmbientCards: () => [] },
     '../../native/notification-icons': { ALL_NOTIFICATIONS: 0x7fffffff, readActiveNotificationIcons: (max) => {
       requested.push(max);
@@ -450,7 +460,7 @@ function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, t
     '../../native/notification-types': notificationTypes,
     '../../native/phone-battery': { readPhoneBatteryState: () => ({ battery: phoneBattery, charging: false }) },
     '../../util/render-freshness': { renderPassAllowsStaleData: () => false },
-    '../dashboard-settings': { batteryDisplayModeSetting: { get: () => 'icon' }, phoneBatteryVisibilitySetting: settings,
+    '../dashboard-settings': { batteryDisplayModeSetting: { get: () => batteryMode }, phoneBatteryVisibilitySetting: settings,
       batteryIndicatorVisible: () => true },
     '../clock-format': { formatClockDate: () => 'Thu Oct 2', formatClockTime: () => '9:41' },
     '../layers': { LayerStack: { allocateShellKey: () => nextKey++ } },
@@ -469,7 +479,7 @@ function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, t
   };
   let heightChanges = 0;
   const chrome = new context.exports.ShellChromeLayer(() => state, () => heightChanges++);
-  return { chrome, state, requested, planBottomBar: context.exports.planBottomBar, heightChanges: () => heightChanges };
+  return { chrome, state, requested, batteryCalls, planBottomBar: context.exports.planBottomBar, heightChanges: () => heightChanges };
 }
 const notification = (key) => ({ kind: 'notification', key });
 const keysOf = (items) => Array.from(items, (item) => item.key);
@@ -597,6 +607,14 @@ test('the status bar can join a bottom app switcher, and windows grow into the t
   g.settings.displayLayoutSetting.value = 'fullscreen';
   assert.equal(g.statusInSwitcherRow(), true);
   assert.deepEqual(g.rect('max'), { x: 0, y: 0, width: 640, height: 444 });
+});
+
+test('the top bar routes Dense percentage through its dedicated same-footprint renderer', () => {
+  const g = geometry();
+  const { chrome, batteryCalls } = chromeLayer(g, { phoneBattery: 80, batteryMode: 'dense-percentage' });
+  chrome.paintParts();
+  assert.ok(batteryCalls.densePercentage > 0);
+  assert.equal(batteryCalls.dense, 0);
 });
 
 test('the switcher row lays out windows, free space, notifications, widgets, batteries and the clock', () => {

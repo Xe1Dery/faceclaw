@@ -59,6 +59,7 @@ const UPNG = require("upng-js");
 const { GrayImage, G2_LENS_WIDTH, G2_LENS_HEIGHT } = require(path.join(BUILD, "graphics/image.js"));
 const { getFont } = require(path.join(BUILD, "graphics/bdffont.js"));
 const { wrapText } = require(path.join(BUILD, "graphics/textwrap.js"));
+const { centeredTextY } = require(path.join(BUILD, "ui/metrics.js"));
 
 const args = {
   out: (() => {
@@ -82,6 +83,8 @@ const BAR_LINE = 16;     // terminus16 line height, per extra wrapped line
 const G_TAP = "●";
 const G_DOUBLE = "●●";
 const G_SCROLL = "▲▼";
+const G_LONG = "—";
+const G_SHORT_LONG = `${G_TAP}${G_LONG}`;
 
 // Band geometry mirrors geometry.ts: windowTop("min") = round((screen -
 // one switcher row - band) * fraction), band = minWindowHeight = 288, and a
@@ -153,7 +156,7 @@ function drawMic(img, x, y, value, filled = true) {
 }
 
 /**
- * The dictation bar. opts: {text, controls, countdown}
+ * The dictation bar. opts: {text, controls, countdown, recording}
  * - full width always; one line tall, growing UP as the phrase wraps
  *   (bottom edge fixed); the tail of the phrase is what stays visible;
  * - controls: the post-dictation glyph hint row (● send · ▲▼ redo · ●● close);
@@ -165,19 +168,23 @@ function dictationBar(img, opts) {
   // the phrase wraps at the full inner width; the bar grows up to fit it
   const lines = opts.text ? wrapText(medium, opts.text, BAR_W - 36 - 14) : [];
   const shown = lines.slice(0, 4); // hard cap: 4 lines, then it scrolls
-  const height = BAR_H + Math.max(0, shown.length - 1) * BAR_LINE + (opts.controls ? small.lineHeight + 4 : 0);
+  const controls = opts.controls ?? true;
+  const height = BAR_H + Math.max(0, shown.length - 1) * BAR_LINE + (controls ? small.lineHeight + 4 : 0);
   const y = barBottom() - height;
   img.fillRect(x, y, BAR_W, height, 1);
   img.drawRect(x, y, BAR_W, height, 120);
-  drawMic(img, x + 14, y + 10, 235, !opts.controls);
+  drawMic(img, x + 14, y + 10, 235, opts.recording ?? !opts.controls);
   if (shown.length) {
     shown.forEach((line, i) => medium.drawText(img, x + 36, y + 14 + i * BAR_LINE, line, 235));
   } else {
     small.drawText(img, x + 36, y + 16, "Слушаю...", 150);
   }
-  if (opts.controls) {
+  if (controls) {
     const cy = y + height - small.lineHeight - 4;
-    small.drawText(img, x + 36, cy, `${G_TAP} отправить   ${G_SCROLL} заново   ${G_DOUBLE} закрыть`, 150);
+    const hint = opts.appendControl
+      ? `${G_TAP} отправить   ${G_SCROLL} заново   ${G_LONG} дополнить   ${G_DOUBLE} закрыть`
+      : `${G_TAP} отправить   ${G_SCROLL} заново   ${G_DOUBLE} закрыть`;
+    small.drawText(img, x + 36, cy, hint, 150);
   }
   if (opts.countdown !== undefined) {
     // auto-send grace: a shrinking underline at the bottom edge, full = 1.5s
@@ -196,14 +203,19 @@ function chatWindow(img, opts) {
   img.fillRect(x, top, width, height, 1);
   img.drawRect(x, top, width, height, 120);
   // header: name left, link square right (bridge state lives here now)
-  medium.drawText(img, x + 14, top + 8, "OpenClaw", 200);
+  medium.drawText(img, x + 14, centeredTextY(medium, top, 32), "OpenClaw", 200);
   const sq = 12;
   img.fillRect(x + width - sq - 14, top + 10, sq, sq, opts.link === "down" ? 255 : opts.link === "connecting" ? 120 : 235);
   if (opts.link === "connecting") img.fillRect(x + width - sq - 9, top + 15, 2, 2, 1);
   img.drawLine(x, top + 32, x + width, top + 32, 70);
   // messages, newest last
   let y = top + 40;
+  let previousRole = null;
   for (const msg of opts.messages) {
+    if (previousRole === "agent" && msg.role === "user") {
+      img.drawLine(x + 14, y + 1, x + width - 14, y + 1, 70);
+      y += 9;
+    }
     const user = msg.role === "user";
     const text = user ? "> " + msg.text : msg.text;
     const lines = wrapText(medium, text, width - 28);
@@ -214,6 +226,7 @@ function chatWindow(img, opts) {
       y += medium.lineHeight;
     }
     y += 6;
+    previousRole = msg.role;
   }
   // the agent's action trail (Thinking, Exec...) rides under the newest message
   if (opts.actions) {
@@ -244,11 +257,58 @@ function popup(img, opts) {
   const y = bandTop() + 80;
   img.fillRect(x, y, width, height, 1);
   img.drawRect(x, y, width, height, 90);
-  medium.drawText(img, x + 14, y + 10, opts.title, 200);
+  medium.drawText(img, x + 14, centeredTextY(medium, y, 32), opts.title, 200);
   const bodyLines = wrapText(medium, opts.text, width - 28);
   bodyLines.slice(0, 3).forEach((line, i) => medium.drawText(img, x + 14, y + 10 + medium.lineHeight + 4 + i * medium.lineHeight, line, 235));
-  const hint = opts.hint || "Тап - ответить · Двойной - пропустить";
-  small.drawText(img, x + 14, y + height - small.lineHeight - 10, hint, 150);
+  if (opts.hint !== null) {
+    const hint = opts.hint || "Тап - ответить · Двойной - пропустить";
+    small.drawText(img, x + 14, y + height - small.lineHeight - 10, hint, 150);
+  }
+  return { x, y, width, height };
+}
+
+/** Telegram proposal: content-sized, centered in and capped by the selected app band. */
+function telegramPopup(img, opts) {
+  const x = 32;
+  const width = G2_LENS_WIDTH - 64;
+  const maxHeight = BAND_H;
+  const split = opts.text.split(" - ");
+  const sender = split.shift() || "Telegram";
+  const displayedText = split.join(" - ") || opts.text;
+  const allBodyLines = wrapText(medium, displayedText, width - 28);
+  const fixedHeight = 66; // padding + title/divider + gaps + fixed hint
+  const maxBodyLines = Math.max(1, Math.floor((maxHeight - fixedHeight) / medium.lineHeight));
+  const maxScroll = Math.max(0, allBodyLines.length - maxBodyLines);
+  const scrollLine = Math.min(maxScroll, Math.max(0, opts.scrollLine || 0));
+  const bodyLines = allBodyLines.slice(scrollLine, scrollLine + maxBodyLines);
+  const height = Math.min(maxHeight, fixedHeight + bodyLines.length * medium.lineHeight);
+  const y = bandTop() + Math.round((BAND_H - height) / 2);
+  img.fillRect(x, y, width, height, 1);
+  img.drawRect(x, y, width, height, 90);
+  const iconX = x + 14;
+  const iconY = y + 8;
+  // Monochrome Telegram paper-plane mark; shipping uses the notification's own source icon.
+  img.drawLine(iconX, iconY + 7, iconX + 18, iconY, 220);
+  img.drawLine(iconX + 18, iconY, iconX + 13, iconY + 17, 220);
+  img.drawLine(iconX + 13, iconY + 17, iconX + 8, iconY + 11, 220);
+  img.drawLine(iconX + 8, iconY + 11, iconX, iconY + 7, 220);
+  img.drawLine(iconX + 8, iconY + 11, iconX + 18, iconY, 220);
+  medium.drawText(img, x + 40, centeredTextY(medium, y, 32), sender, 200);
+  img.drawLine(x, y + 32, x + width, y + 32, 70);
+  bodyLines.forEach((line, i) => medium.drawText(
+    img,
+    x + 14,
+    y + 38 + i * medium.lineHeight,
+    line,
+    235,
+  ));
+  const arrowX = x + width - 14 - small.measureText("▲");
+  const bodyTop = y + 38;
+  const bodyBottom = y + height - small.lineHeight - 18;
+  if (scrollLine > 0) small.drawText(img, arrowX, bodyTop, "▲", 170);
+  if (scrollLine < maxScroll) small.drawText(img, arrowX, bodyBottom - small.lineHeight, "▼", 170);
+  const hintY = y + height - small.lineHeight - 10;
+  small.drawText(img, x + 14, hintY, opts.hint, 150);
   return { x, y, width, height };
 }
 
@@ -292,7 +352,7 @@ function shot(name, title, note, build) {
 shot(
   "01-bar-one-line",
   "Диктовка поверх интерфейса - одна строка",
-  "Полоса сразу во всю ширину, прижата к низу. Пока фраза влезает в строку, высота не растёт. Подсказок нет - место под них внизу полосы зарезервировано.",
+  "Полоса сразу во всю ширину, прижата к низу. Пока фраза влезает в строку, высота не растёт. Подсказки управления видны с первого кадра.",
   (img) => {
     background().composeInto(img, 0, 0);
     dictationBar(img, { text: "Поставь напоминание" });
@@ -312,11 +372,11 @@ shot(
   },
 );
 
-// 3. Dictation finished: controls appear.
+// 3. Dictation finished: controls stay; the microphone changes shape.
 shot(
   "03-bar-controls",
-  "Диктовка окончена - появились подсказки",
-  "После окончания записи микрофон меняется с залитого на контурный. Подсказки: ● отправить, ▲▼ заново, ●● закрыть.",
+  "Диктовка окончена - микрофон стал контурным",
+  "После окончания записи микрофон меняется с залитого на контурный. Подсказки ● отправить, ▲▼ заново, ●● закрыть остаются на месте.",
   (img) => {
     background().composeInto(img, 0, 0);
     dictationBar(img, {
@@ -361,7 +421,7 @@ shot(
 shot(
   "05b-chat-answer",
   "Окно диалога - ответ агента",
-  "Ответ занял место действия. Внизу подсказка: ● продолжить, ●● выйти.",
+  "Ответ занял место действия. Подсказка прокрутки остаётся видимой вместе с ● продолжить и ●● выйти.",
   (img) => {
     chatWindow(img, {
       link: "connected",
@@ -369,7 +429,7 @@ shot(
         { role: "user", text: "Напомни мне завтра в семь вечера позвонить маме" },
         { role: "agent", text: "Готово. Завтра в 19:00 напомню позвонить маме. Ставлю в список «Личное»." },
       ],
-      hint: `${G_TAP} продолжить   ${G_DOUBLE} выйти`,
+      hint: `${G_SCROLL} прокрутка   ${G_TAP} продолжить   ${G_DOUBLE} выйти`,
     });
   },
 );
@@ -406,7 +466,7 @@ shot(
         { role: "user", text: "Перенеси созвон на 11" },
         { role: "agent", text: "Перенёс. Осталось: созвон 11:00, обед 13:00." },
       ],
-      hint: `${G_TAP} продолжить   ${G_DOUBLE} выйти`,
+      hint: `${G_SCROLL} прокрутка   ${G_TAP} продолжить   ${G_DOUBLE} выйти`,
     });
   },
 );
@@ -505,6 +565,170 @@ shot(
   },
 );
 
+// 14. TickTick owns delivery; Faceclaw adds deterministic glass controls.
+shot(
+  "14-ticktick-hybrid",
+  "TickTick - гибридное уведомление",
+  "Штатное уведомление TickTick в той же рамке: тап завершает задачу, двойной тап откладывает Android-уведомление на 5 минут, удержание открывает существующую голосовую строку. Прокрутка для TickTick не назначена.",
+  (img) => {
+    popup(img, {
+      title: "TickTick",
+      text: "Позвонить маме - сегодня в 19:00",
+      hint: `${G_TAP} готово   ${G_DOUBLE} +5 мин   ${G_LONG} голос`,
+    });
+  },
+);
+
+// 15. TickTick dictation keeps the notification pending; controls never pop in late.
+shot(
+  "15-ticktick-dictation-persistent",
+  "TickTick - диктовка не закрывает уведомление",
+  "Окно TickTick остаётся под голосовой строкой. Подсказка управления видна с первого кадра записи; заполненный микрофон означает, что запись ещё идёт. Если ничего не услышано или Нано недоступен, строка закрывается и снова остаётся это же уведомление.",
+  (img) => {
+    popup(img, {
+      title: "TickTick",
+      text: "Позвонить маме - сегодня в 19:00",
+      hint: null,
+    });
+    dictationBar(img, { text: "", controls: true, recording: true });
+  },
+);
+
+// 16. A failed OpenClaw hand-off stays visible briefly instead of vanishing.
+shot(
+  "16-openclaw-error-hold",
+  "Ошибка OpenClaw - 3 секунды до закрытия",
+  "Если текст распознан, но OpenClaw недоступен, голосовая строка не исчезает сразу: она показывает ошибку три секунды, затем закрывается и возвращает управление исходному уведомлению.",
+  (img) => {
+    popup(img, {
+      title: "TickTick",
+      text: "Позвонить маме - сегодня в 19:00",
+      hint: null,
+    });
+    dictationBar(img, { text: "Нет связи с OpenClaw", controls: true, recording: false });
+  },
+);
+
+// 17. Telegram receives its own deterministic notification controls.
+shot(
+  "17-telegram-custom",
+  "Telegram - кастомное уведомление",
+  "Тап с последующим удержанием вызывает штатное действие Telegram «прочитано», двойной тап закрывает уведомление, обычное удержание начинает локальную диктовку ответа.",
+  (img) => {
+    popup(img, {
+      title: "Telegram",
+      text: "Алексей - Ты сегодня будешь?",
+      hint: `${G_SHORT_LONG} прочитано   ${G_DOUBLE} закрыть   ${G_LONG} ответ`,
+    });
+  },
+);
+
+// 18. Telegram reply reuses the same persistent dictation composition.
+shot(
+  "18-telegram-reply-dictation",
+  "Telegram - диктовка ответа",
+  "Во время ответа исходное уведомление остаётся в рамке того же размера, его жесты временно скрыты, а подтверждённый текст отправляется через штатный Android RemoteInput Telegram.",
+  (img) => {
+    telegramPopup(img, {
+      text: "Алексей - Ты сегодня будешь?",
+      hint: "",
+    });
+    dictationBar(img, { text: "Да, буду примерно через десять минут", controls: true, recording: false });
+  },
+);
+
+// 19. Telegram frame shrinks to short notification content.
+shot(
+  "19-telegram-dynamic-short",
+  "Telegram - короткий текст",
+  "Рамка занимает только нужную высоту и остаётся вертикально по центру выбранной полосы Display mode.",
+  (img) => telegramPopup(img, {
+    text: "Алексей - Ты сегодня будешь?",
+    hint: `${G_SHORT_LONG} прочитано   ${G_DOUBLE} закрыть   ${G_LONG} ответ`,
+  }),
+);
+
+// 20. Long Telegram content stops at the app band's exact bounds.
+shot(
+  "20-telegram-dynamic-capped",
+  "Telegram - длинный текст на максимальной высоте",
+  "Высота ограничена размером приложения в выбранном Display mode. Текст целиком сохраняется и прокручивается только между неподвижными заголовком и управлением; ни одна строка не выходит за полосу.",
+  (img) => telegramPopup(img, {
+    text: "Рабочая группа - Большое сообщение с подробностями встречи, адресом, несколькими уточнениями по документам и длинным продолжением. Нужно проверить расписание, взять пропуск, предупредить коллег, подготовить отчёт, приложить таблицы и подтвердить время. После этого автор добавляет ещё несколько абзацев, которые уже не помещаются в выбранный режим отображения и поэтому должны быть аккуратно обрезаны внутри окна, не затрагивая соседние элементы интерфейса. Дополнительный хвост нужен только для проверки жёсткой границы и многоточия в последней видимой строке уведомления. Далее идут детали поездки, номера кабинетов, фамилии участников, список вложений, резервное время и ещё одно длинное пояснение. Этот текст намеренно продолжается дальше физической высоты выбранного Display mode, чтобы макет показал реальное ограничение рамки, последнюю видимую строку и скрытый остаток сообщения без наложения на другие окна.",
+    scrollLine: 5,
+    hint: `${G_SHORT_LONG} прочитано   ${G_DOUBLE} закрыть   ${G_LONG} ответ   ${G_SCROLL} прокрутка`,
+  }),
+);
+
+// 21. Assistant scroll boundary: no history line can enter the fixed header.
+shot(
+  "21-assistant-scroll-clipped",
+  "OpenClaw - прокрутка не заходит в заголовок",
+  "После прокрутки первая видимая строка начинается строго под разделителем. Заголовок OpenClaw и нижняя подсказка остаются неподвижными.",
+  (img) => {
+    chatWindow(img, {
+      link: "connected",
+      messages: [
+        { role: "agent", text: "Первая видимая строка после прокрутки. История выше скрыта границей области текста и не рисуется поверх заголовка OpenClaw." },
+        { role: "user", text: "Продолжай" },
+        { role: "agent", text: "Следующие строки остаются только в центральной области разговора." },
+      ],
+      hint: `${G_SCROLL} прокрутка   ${G_TAP} продолжить   ${G_DOUBLE} выйти`,
+    });
+  },
+);
+
+// 22. Direct TickTick task rescheduling needs one phone-side API credential.
+shot(
+  "22-ticktick-api-token-setting",
+  "TickTick - токен для прямого переноса срока",
+  "Тот же персональный токен, который используется TickTick MCP, вводится один раз. Значение замаскировано. После этого простые интервальные команды меняют задачу напрямую, без LLM.",
+  (img) => {
+    const x = 32;
+    const y = bandTop();
+    const width = 576;
+    const height = BAND_H;
+    img.drawRect(x, y, width, height, 90);
+    medium.drawText(img, x + 16, centeredTextY(medium, y, 32), "Settings / API Keys", 220);
+    img.drawLine(x, y + 32, x + width, y + 32, 70);
+    const rows = [
+      ["Remote input", "Configure"],
+      ["ElevenLabs key", "(not set)"],
+      ["OpenAI key", "sk-pro..."],
+      ["Soniox key", "(not set)"],
+      ["Anthropic key", "(not set)"],
+      ["Mapbox key", "pk.abc..."],
+      ["TickTick API token", "eyJhbG..."],
+    ];
+    rows.forEach(([label, value], index) => {
+      const rowY = y + 42 + index * 30;
+      if (index === rows.length - 1) img.drawRect(x + 8, rowY - 5, width - 16, 24, 80);
+      small.drawText(img, x + 18, rowY, label, 220);
+      small.drawText(img, x + width - 18 - small.measureText(value), rowY, value, 160);
+    });
+  },
+);
+
+// 23. A proactive question remains visible under finalized dictation; a hold appends speech.
+shot(
+  "23-dialog-dictation-append",
+  "Вопрос агента остаётся под диктовкой",
+  "Окно glasses.dialog_open не исчезает при запуске микрофона. После остановки записи появляется действие — дополнить: удержание снова включает микрофон и добавляет новую фразу к уже распознанному тексту.",
+  (img) => {
+    popup(img, {
+      title: "OpenClaw",
+      text: "Во сколько перенести встречу?",
+      hint: null,
+    });
+    dictationBar(img, {
+      text: "Перенеси на завтра",
+      controls: true,
+      recording: false,
+      appendControl: true,
+    });
+  },
+);
+
 // --- HTML sheet -------------------------------------------------------------------
 
 const html = `<!doctype html>
@@ -518,7 +742,7 @@ const html = `<!doctype html>
 </style>
 <h1>Ассистент - редизайн: макеты (640×480, Terminus, зелёный тон панели; позиция интерфейса: ${VPOS})</h1>
 <p class="note">Фон под оверлеями - схематичный стенд-ин, не реальный экран приложения. Геометрия полос и рамок - честная:
-полоса диктовки - самый нижний элемент интерфейса: низ полосы стоит на нижней кромке интерфейса и перекрывает ряд переключателя, высота 44 px, растёт вверх; рамки уведомлений -
+полоса диктовки - самый нижний элемент интерфейса: низ полосы стоит на нижней кромке интерфейса и перекрывает ряд переключателя, базовая высота 62 px с управлением, растёт вверх; рамки уведомлений -
 рецепт ReminderLayer (фон 1, рамка 90, заголовок 200, текст 235, подсказка 150).</p>
 ${shots
   .map((s) => `<h2>${s.title}</h2>\n<p class="note">${s.note}</p>\n<img src="${s.png}" width="640" height="480">`)

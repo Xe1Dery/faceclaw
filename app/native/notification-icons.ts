@@ -329,11 +329,37 @@ export function invokeNotificationAction(notificationKey: string, actionIndex: n
   );
 }
 
+/** Send text through a notification action's native Android RemoteInput. */
+export function invokeNotificationReply(notificationKey: string, actionIndex: number, text: string): boolean {
+  text = text.trim();
+  if (!global.isAndroid || !notificationKey || !text) return false;
+  invalidateIconCaches();
+  return Boolean(
+    com.faceclaw.app.FaceclawMediaNotificationListenerService.invokeNotificationReply(
+      notificationKey,
+      Math.round(actionIndex),
+      text,
+    ),
+  );
+}
+
 export function dismissNotification(notificationKey: string): boolean {
   if (!global.isAndroid || !notificationKey) return false;
   invalidateIconCaches();
   return Boolean(
     com.faceclaw.app.FaceclawMediaNotificationListenerService.dismissNotification(notificationKey),
+  );
+}
+
+/** Ask Android to repost a notification after the requested delay (API 26+). */
+export function snoozeNotification(notificationKey: string, durationMs: number): boolean {
+  if (!global.isAndroid || !notificationKey || !Number.isFinite(durationMs) || durationMs <= 0) return false;
+  invalidateIconCaches();
+  return Boolean(
+    com.faceclaw.app.FaceclawMediaNotificationListenerService.snoozeNotification(
+      notificationKey,
+      Math.round(durationMs),
+    ),
   );
 }
 
@@ -478,5 +504,7 @@ function normalizeAction(value: any): AndroidNotificationAction | null {
     index,
     title,
     enabled: Boolean(value.enabled),
+    semanticAction: Number(value.semanticAction) || 0,
+    hasRemoteInput: Boolean(value.hasRemoteInput),
   };
 }

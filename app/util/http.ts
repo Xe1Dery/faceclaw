@@ -20,6 +20,8 @@ export function fetchWithUserAgent(url: string, init?: RequestInit): Promise<Res
 export interface TextResponse {
   ok: boolean;
   status: number;
+  /** Case-insensitive response-header lookup (needed by MCP session setup). */
+  header(name: string): string | null;
   text(): Promise<string>;
   json<T = unknown>(): Promise<T>;
 }
@@ -56,6 +58,15 @@ export async function fetchTextWithUserAgent(
     dontFollowRedirects: init?.dontFollowRedirects,
   });
   const status = response.statusCode;
+  const responseHeaders = response.headers as Record<string, unknown> | undefined;
+  const header = (name: string): string | null => {
+    if (!responseHeaders) return null;
+    const wanted = name.toLowerCase();
+    for (const [key, value] of Object.entries(responseHeaders)) {
+      if (key.toLowerCase() === wanted && value !== undefined && value !== null) return String(value);
+    }
+    return null;
+  };
   let body: string | undefined;
   const read = (): string => {
     if (body === undefined) {
@@ -71,6 +82,7 @@ export async function fetchTextWithUserAgent(
   return {
     ok: status >= 200 && status < 300,
     status,
+    header,
     text: async () => read(),
     json: async () => JSON.parse(read()),
   };

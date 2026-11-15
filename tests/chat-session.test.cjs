@@ -6,8 +6,9 @@ function env() {
   const renders = { count: 0 };
   const font = (lineHeight) => ({
     lineHeight,
+    ascent: lineHeight - 2,
     measureText: (t) => t.length * 8,
-    getGlyph: () => ({ dwidthX: 8 }),
+    getGlyph: () => ({ dwidthX: 8, bbxHeight: lineHeight - 2, bbxY: 0 }),
   });
   class GrayImage {
     constructor(width, height, value) { this.width = width; this.height = height; this.value = value; this.ops = []; }
@@ -107,6 +108,7 @@ test('a finished turn lands in the thread and offers the follow-up hint', () => 
     { role: 'agent', text: 'ок' },
   ]);
   const hint = e.paint(layer).find((o) => /продолжить/.test(o.text ?? ''));
+  assert.match(hint.text, /▲▼ прокрутка/);
   assert.match(hint.text, /● продолжить\s+●● выйти/);
 });
 
@@ -132,6 +134,25 @@ test('scroll works during generation and the arrow marks more below', () => {
   layer.handleInput(scrollUp); // scroll up while the agent is still working
   const ops = e.paint(layer);
   assert.ok(ops.some((o) => o.text === '▼'), 'more content below is marked');
+  const bodyText = ops.filter((o) => o.op === 'text' && o.text !== 'OpenClaw'
+    && !/прокрутка|прервать/.test(o.text ?? '') && o.text !== '▼');
+  assert.ok(bodyText.every((o) => o.y >= 130), 'scrolled text never enters the fixed title');
+});
+
+test('a new user turn gets one inset divider after the previous agent answer', () => {
+  const e = env();
+  const { layer } = e.open([
+    { role: 'user', text: 'первый запрос' },
+    { role: 'agent', text: 'первый ответ' },
+    { role: 'user', text: 'новый запрос' },
+  ]);
+  layer.restoreIdle(false);
+  const ops = e.paint(layer);
+  const rules = ops.filter((o) => o.op === 'drawLine');
+  assert.ok(rules.some((o) => o.a[0] === 32 && o.a[2] === 608),
+    'the title rule reaches both frame edges');
+  assert.equal(rules.filter((o) => o.a[0] === 48 && o.a[2] === 592).length, 1,
+    'only the agent-to-user turn divider is inset');
 });
 
 test('restoreIdle keeps the thread and follows whether a turn is live', () => {
@@ -141,8 +162,12 @@ test('restoreIdle keeps the thread and follows whether a turn is live', () => {
   layer.restoreIdle(false);
   const hint = e.paint(layer).find((o) => /выйти/.test(o.text ?? ''));
   assert.ok(hint, 'an idle restore shows the continue/exit hint');
+  assert.match(hint.text, /▲▼ прокрутка/);
   layer.restoreIdle(true);
-  assert.ok(!e.paint(layer).some((o) => /выйти/.test(o.text ?? '')));
+  const working = e.paint(layer);
+  assert.ok(!working.some((o) => /выйти/.test(o.text ?? '')));
+  assert.ok(working.some((o) => /▲▼ прокрутка/.test(o.text ?? '')),
+    'the scroll hint remains visible while the agent works');
 });
 
 test('the window paints an opaque panel over its band and keeps the interface', () => {
@@ -154,6 +179,8 @@ test('the window paints an opaque panel over its band and keeps the interface', 
   assert.equal(image.value, 0, 'the canvas starts transparent: the interface shows around the band');
   const panel = image.ops.find((o) => o.op === 'fillRect');
   assert.deepEqual(panel.a.slice(0, 4), [32, 96, 576, 260], 'the opaque panel covers exactly the window band');
+  const border = image.ops.find((o) => o.op === 'drawRect');
+  assert.deepEqual(border.a.slice(0, 4), [32, 96, 576, 260], 'the top plane redraws one continuous frame');
   assert.ok(image.ops.some((o) => o.text === 'OpenClaw'));
   // Device issue 1: content stays inside the band, never at the screen edges.
   for (const o of image.ops.filter((x) => x.op === 'text')) {

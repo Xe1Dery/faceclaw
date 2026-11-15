@@ -5,11 +5,12 @@ import { glanceWidgetSpans } from "./widgets";
 
 export type GlanceSlotChoice = GlanceWidgetId | "none";
 
-const SLOT_CHOICES: readonly GlanceSlotChoice[] = ["none", "system-card", "calendar", "terminal", "t3code", "nightscout", "compass", "music", "health"];
+const SLOT_CHOICES: readonly GlanceSlotChoice[] = ["none", "system-card", "ticktick", "calendar", "terminal", "t3code", "nightscout", "compass", "music", "health"];
 
 const SLOT_CHOICE_LABELS: Record<GlanceSlotChoice, string> = {
   none: "Empty",
   "system-card": "System card",
+  ticktick: "TickTick",
   calendar: "Calendar",
   terminal: "Terminal",
   t3code: "T3 Code",

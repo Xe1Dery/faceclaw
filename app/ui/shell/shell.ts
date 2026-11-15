@@ -20,7 +20,11 @@ import {
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
-import { DictationBarLayer, DictationRefusalLayer } from "./dictation-bar";
+import {
+  DictationBarLayer,
+  DictationRefusalLayer,
+  type DictationSubmission,
+} from "./dictation-bar";
 import { ChatSessionLayer, type ChatMessage } from "./chat-session";
 import { assistantBridge } from "../../assistant/bridge-client";
 import { ReminderLayer, type ReminderOutcome, type ReminderRequest } from "./reminder-layer";
@@ -70,8 +74,19 @@ import {
 } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { NotificationModalQueue } from "./notification-modal-queue";
-import { ALL_NOTIFICATIONS, readActiveNotifications } from "../../native/notification-icons";
+import { PersistentNotificationReopener } from "./persistent-notification-reopener";
+import {
+  ALL_NOTIFICATIONS,
+  dismissNotification,
+  invokeNotificationAction,
+  invokeNotificationReply,
+  readActiveNotifications,
+  readNotificationIconByKey,
+  snoozeNotification,
+} from "../../native/notification-icons";
 import { shouldShowNotificationOnGlasses } from "../../native/notification-sources";
+import { customNotificationProfileFor } from "../custom-notifications";
+import { CustomNotificationLayer } from "./custom-notification-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import type { InProcessWindow } from "./in-process-window";
 import { BrightnessPickerLayer } from "./brightness-picker-layer";
@@ -274,7 +289,8 @@ export type TrayWidget = {
  * A new-notification popup: the shell modal, and the notification view inside
  * it (null for an app notification, which brings its own layer).
  */
-type NotificationPopup = { modal: ShellModalLayer; content: SingleNotificationLayer | null };
+type NotificationPopupContent = { outlivesNotification(): boolean };
+type NotificationPopup = { modal: Layer; content: NotificationPopupContent | null };
 
 /**
  * The app switcher's selection while it is on a status bar item rather than
@@ -512,6 +528,14 @@ class Shell {
       return !!notification && shouldShowNotificationOnGlasses(notification.packageName);
     },
     sleep: () => this.sleep(),
+  });
+  private readonly persistentNotificationReopener = new PersistentNotificationReopener({
+    isAvailable: (notificationKey) => {
+      const notification = readActiveNotifications(ALL_NOTIFICATIONS)
+        .find((item) => item.key === notificationKey);
+      return Boolean(notification && customNotificationProfileFor(notification)?.reappearAfterMs);
+    },
+    reopen: (notificationKey) => this.reopenPersistentNotification(notificationKey),
   });
   private conversations: AssistantConversations | null = null;
   private get assistantSession(): AssistantSession | null {
@@ -1065,6 +1089,7 @@ class Shell {
    * notification it dismissed.
    */
   notificationRemoved(notificationKey: string): void {
+    this.persistentNotificationReopener.settled(notificationKey);
     const popup = this.notificationModals.withdrawn(notificationKey);
     if (popup && !popup.content?.outlivesNotification()) {
       this.closeNotificationModal(popup, notificationKey);
@@ -1082,35 +1107,102 @@ class Shell {
   }
 
   private pushNotificationModal(notificationKey: string, standalone: boolean): NotificationPopup {
+    // A delayed persistent popup can become standalone while the screen is
+    // already on. Cool retained surfaces before its first frame is stacked.
+    if (standalone && this.screenOn && !this.standaloneActive() && !this.standaloneOpening) {
+      this.beginStandaloneOpening();
+    }
     const appNotification = this.appNotifications.get(notificationKey);
-    const close = () => this.closeNotificationModal(popup, notificationKey);
-    const content = appNotification
+    const close = (keepScreenOn = false) => this.closeNotificationModal(popup, notificationKey, keepScreenOn);
+    const notification = appNotification
       ? null
-      : new SingleNotificationLayer(notificationKey, { origin: "new-notification-modal", onClose: close });
-    const popup: NotificationPopup = {
-      content,
-      modal: new ShellModalLayer(
-        appNotification ? appNotification.createLayer(close) : content!,
-        this.config.actions,
-        () => {
-          this.appNotifications.delete(notificationKey);
-          this.notificationModals.removed(popup, this.screenOn);
-        },
-        standalone,
-      ),
+      : readActiveNotifications().find((item) => item.key === notificationKey) ?? null;
+    const profile = notification ? customNotificationProfileFor(notification) : null;
+    const sourceIcon = notification && profile?.sourceIcon
+      ? readNotificationIconByKey(notification.key, false).icon
+      : null;
+    const removed = (unresolved = false) => {
+      this.appNotifications.delete(notificationKey);
+      this.notificationModals.removed(popup, this.screenOn);
+      if (profile?.reappearAfterMs) {
+        if (unresolved) this.persistentNotificationReopener.unresolved(notificationKey);
+        else this.persistentNotificationReopener.settled(notificationKey);
+      }
     };
+    const custom = notification && profile
+      ? new CustomNotificationLayer(profile, notification, this.config.actions, {
+          currentNotification: () => readActiveNotifications().find((item) => item.key === notificationKey) ?? null,
+          sourceIcon,
+          displayBounds: () => {
+            const foreground = this.foregroundWindow();
+            const mode = foreground?.heightMode ?? "min";
+            const appId = foreground?.appId;
+            return { top: windowTop(mode, appId), height: windowBandHeight(mode, appId) };
+          },
+          invokeAction: invokeNotificationAction,
+          invokeReply: invokeNotificationReply,
+          dismissNotification,
+          snoozeNotification,
+          openVoice: (onSubmit, onClosed) => this.openAssistantDictation({
+            onSubmit,
+            onClosed,
+            // Local done/snooze commands must keep working when Nano is offline.
+            allowWithoutAssistant: true,
+            // A silent or cancelled attempt returns to the still-pending notification.
+            closeOnEmpty: true,
+            preserveStandaloneBelow: true,
+          }),
+          assistantFailure: () => this.assistantSendFailure(),
+          sendToAssistant: (message) => this.sendToAssistant(message, true, false),
+          close,
+          removed,
+        }, standalone)
+      : null;
+    const content = appNotification || custom
+      ? custom
+      : new SingleNotificationLayer(notificationKey, {
+          origin: "new-notification-modal",
+          onClose: () => close(),
+        });
+    const popup: NotificationPopup = custom
+      ? { content: custom, modal: custom }
+      : {
+          content,
+          modal: new ShellModalLayer(
+            appNotification ? appNotification.createLayer(close) : content!,
+            this.config.actions,
+            removed,
+            standalone,
+          ),
+        };
+    if (custom && profile?.reappearAfterMs) {
+      this.persistentNotificationReopener.shown(notificationKey, profile.reappearAfterMs);
+    }
     this.stack.push(popup.modal);
     return popup;
   }
 
-  private closeNotificationModal(popup: NotificationPopup, notificationKey: string): void {
+  private closeNotificationModal(
+    popup: NotificationPopup,
+    notificationKey: string,
+    keepScreenOn = false,
+  ): void {
     this.appNotifications.delete(notificationKey);
     // The queue first: it opens the next notification or puts the screen back
     // to sleep, and then ignores the removal below. remove() rather than a
     // pop, so a menu opened over the modal doesn't leave it stuck.
-    this.notificationModals.closed(popup);
+    this.notificationModals.closed(popup, !keepScreenOn);
     this.stack.remove(popup.modal);
     this.config.requestShellRender();
+  }
+
+  /** Re-show a pending custom notification alone, never revealing retained windows first. */
+  private reopenPersistentNotification(notificationKey: string): boolean {
+    const wokeScreen = !this.screenOn;
+    if (wokeScreen) this.wakeForStandalone();
+    const opened = this.notificationModals.post(notificationKey, wokeScreen, true);
+    this.config.requestShellRender();
+    return opened;
   }
 
   /** Called by a window when the user backs out of its root (double-tap). */
@@ -1186,6 +1278,9 @@ class Shell {
     // "wake". Keep that directionality if delivery is delayed or duplicated.
     if (event.type === "display-wake") {
       this.lastInputAtMs = Date.now();
+      if (!this.screenOn && this.persistentNotificationReopener.reopenOnWake()) {
+        return { shell: true, window: false };
+      }
       const wokeScreen = !this.screenOn && this.wake(this.userWakeFocus());
       return { shell: wokeScreen, window: false };
     }
@@ -1230,6 +1325,9 @@ class Shell {
 
     if (!this.screenOn) {
       if (event.type === "double-click") {
+        if (this.persistentNotificationReopener.reopenOnWake()) {
+          return { shell: true, window: false };
+        }
         this.wake(this.userWakeFocus());
         return { shell: true, window: false };
       }
@@ -1245,7 +1343,13 @@ class Shell {
     // its own: it gets the press forwarded, with the escape timer running
     // so that holding the press long enough still opens the system menu.
     if (event.type === "long-press") {
-      if (this.activeVoiceLayer || !this.stack.isAtBase()) {
+      if (this.activeVoiceLayer) {
+        return { shell: true, window: false };
+      }
+      if (!this.stack.isAtBase()) {
+        if (this.stack.topMatches((layer) => Boolean(layer.claimsLongPress))) {
+          await this.stack.handleInput(event);
+        }
         return { shell: true, window: false };
       }
       const window = this.foregroundWindow();
@@ -1271,6 +1375,12 @@ class Shell {
     // first), which answers with its own menu or asks for the system menu
     // when it has none.
     if (event.type === "short-then-long-press") {
+      if (!this.stack.isAtBase()) {
+        if (this.stack.topMatches((layer) => Boolean(layer.claimsShortThenLongPress))) {
+          await this.stack.handleInput(event);
+        }
+        return { shell: true, window: false };
+      }
       const window = this.foregroundWindow();
       if (window?.holdToTalk) {
         this.openEscapeMenu();
@@ -1750,8 +1860,16 @@ class Shell {
    */
   openAssistantDictation(options: {
     autoSend?: boolean;
+    /** Capture may finish locally even when the external assistant bridge is offline. */
+    allowWithoutAssistant?: boolean;
+    /** Close this specialized attempt when recognition finishes empty. */
+    closeOnEmpty?: boolean;
+    /** Keep an underlying standalone notification painted behind the bar. */
+    preserveStandaloneBelow?: boolean;
     /** Where the sent text goes; defaults to a new assistant turn. */
     onSent?: (text: string) => void;
+    /** Validate/execute a specialized destination before dismissing the bar. */
+    onSubmit?: (text: string) => DictationSubmission;
     /** Fires instead of onSent when the bar closed without sending. */
     onClosed?: () => void;
   } = {}): boolean {
@@ -1770,13 +1888,15 @@ class Shell {
       }
       return false;
     }
-    if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
+    if (!options.allowWithoutAssistant
+        && assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
       this.showAssistantNoLink(preparedStandalone);
       return false;
     }
     // Locked glasses: the bar arrives standalone over a dark screen, the
     // interface is not raised behind it (spec 2, mockup 11).
-    const standalone = preparedStandalone || !this.screenOn;
+    const ownsStandaloneWake = preparedStandalone || !this.screenOn;
+    const standalone = ownsStandaloneWake || this.standaloneActive();
     if (standalone && !this.screenOn) this.wakeForStandalone();
     const autoSend = options.autoSend ?? assistantSkipConfirmationSetting.get();
     const layer = new DictationBarLayer({
@@ -1795,16 +1915,22 @@ class Shell {
           voiceActivity.setActive(false);
           this.noteUserActivity();
         }
-        if (outcome.action === "sent") (options.onSent ?? ((text) => this.sendToAssistant(text)))(outcome.text);
+        if (outcome.action === "sent") {
+          if (options.onSent) options.onSent(outcome.text);
+          else if (!options.onSubmit) this.sendToAssistant(outcome.text);
+        }
         else {
           options.onClosed?.();
           // This bar alone woke a dark screen. Closing/cancelling it must
           // blank before standalone cooling is released, otherwise the
           // retained app/menu appears and the wake becomes a normal unlock.
-          if (standalone && this.screenOn) this.sleep();
+          if (ownsStandaloneWake && this.screenOn) this.sleep();
         }
       },
+      onSubmit: options.onSubmit,
       autoSend,
+      closeOnEmpty: options.closeOnEmpty,
+      preserveStandaloneBelow: options.preserveStandaloneBelow,
     });
     this.activeDictationBar = layer;
     voiceActivity.setActive(true);
@@ -2008,28 +2134,28 @@ class Shell {
    * Opens the assistant overlay if it isn't already up; a follow-up reuses the
    * existing session and overlay.
    */
-  sendToAssistant(text: string, showOverlay = true): void {
+  sendToAssistant(text: string, showOverlay = true, showFailure = true): boolean {
     text = text.trim();
-    if (!text) return;
+    if (!text) return false;
     // The chat window needs the agent link (spec 3): without it the bar
     // would have refused already; direct backends keep working.
     if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
-      this.showAssistantNoLink();
-      return;
+      if (showFailure) this.showAssistantNoLink();
+      return false;
     }
     const session = this.ensureAssistantSession();
     if (!session) {
-      this.showAlert(this.assistantSetupHint());
-      return;
+      if (showFailure) this.showAlert(this.assistantSetupHint());
+      return false;
     }
     if (session.isTurnActive()) {
-      this.showAlert("The assistant is still working on the previous request");
-      return;
+      if (showFailure) this.showAlert("The assistant is still working on the previous request");
+      return false;
     }
     if (!this.screenOn) this.wake("sidebar");
     if (!showOverlay || this.foregroundWindow()?.appId === "ai-chat") {
       this.runAssistantTurn(session, null, text);
-      return;
+      return true;
     }
     let layer = this.assistantLayer;
     if (!layer) {
@@ -2038,7 +2164,7 @@ class Shell {
       const created = new ChatSessionLayer(this.config.actions, {
         onFollowUp: () => this.startAssistantFollowUp(),
         onCancel: () => this.assistantSession?.cancel(),
-        onClose: () => this.closeAssistantLayer(),
+        onClose: () => this.closeAssistantLayerAndSleep(),
         onRemoved: () => {
           if (this.assistantLayer === created) {
             this.assistantLayer = null;
@@ -2053,6 +2179,18 @@ class Shell {
     }
     this.runAssistantTurn(session, layer, text);
     this.config.requestShellRender();
+    return true;
+  }
+
+  /** Check a custom dictation hand-off without pushing UI over its live bar. */
+  private assistantSendFailure(): string | null {
+    if (assistantBackendSetting.get() === "external" && !assistantBridge.isConnected()) {
+      return "Нет связи с OpenClaw";
+    }
+    const session = this.ensureAssistantSession();
+    if (!session) return this.assistantSetupHint();
+    if (session.isTurnActive()) return "Ассистент занят";
+    return null;
   }
 
   private runAssistantTurn(session: AssistantSession, layer: ChatSessionLayer | null, text: string): void {
@@ -2118,6 +2256,13 @@ class Shell {
     return closed;
   }
 
+  /** A double-tap is an explicit dismissal of the glasses UI: close the
+   * session first, then blank the lenses immediately instead of revealing
+   * the launcher/application that was underneath it. */
+  private closeAssistantLayerAndSleep(): void {
+    if (this.closeAssistantLayer() && this.screenOn) this.sleep();
+  }
+
   /** Re-open the minimized chat window with its thread (spec 3). */
   private restoreChatWindow(): void {
     if (this.assistantLayer || this.chatHistory.length === 0) return;
@@ -2157,7 +2302,7 @@ class Shell {
     const created = new ChatSessionLayer(this.config.actions, {
       onFollowUp: () => this.startAssistantFollowUp(),
       onCancel: () => this.assistantSession?.cancel(),
-      onClose: () => this.closeAssistantLayer(),
+      onClose: () => this.closeAssistantLayerAndSleep(),
       onRemoved: () => {
         if (this.assistantLayer === created) {
           this.assistantLayer = null;
@@ -2320,6 +2465,9 @@ class Shell {
       },
       (onDone) => this.openAssistantDictation({
         autoSend: false,
+        // Keep the proactive question visible behind the shared dictation
+        // bar on locked glasses, just like a persistent notification.
+        preserveStandaloneBelow: true,
         onSent: (text) => {
           // The answer continues the exchange in the chat window (spec 5),
           // not as this tool's payload.

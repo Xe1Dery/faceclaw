@@ -7,7 +7,7 @@ class VoiceEndpointDetectorTest {
         val detector = VoiceEndpointDetector()
         repeat(6) { assertFalse(detector.acceptLevel(100.0, 800)) }
         repeat(10) { assertFalse(detector.accept(ShortArray(800) { 2000 }, 800)) }
-        repeat(17) { assertFalse(detector.acceptLevel(100.0, 800)) }
+        repeat(27) { assertFalse(detector.acceptLevel(100.0, 800)) }
         assertTrue(detector.acceptLevel(100.0, 800))
         assertFalse(detector.acceptLevel(100.0, 800))
         detector.reset()
@@ -18,9 +18,9 @@ class VoiceEndpointDetectorTest {
         val detector = VoiceEndpointDetector()
         repeat(6) { assertFalse(detector.acceptLevel(0.0, 800)) }
         assertFalse(detector.acceptLevel(2000.0, 800))
-        repeat(17) { assertFalse(detector.acceptLevel(0.0, 800)) }
+        repeat(27) { assertFalse(detector.acceptLevel(0.0, 800)) }
         assertFalse(detector.acceptLevel(2000.0, 800))
-        repeat(17) { assertFalse(detector.acceptLevel(0.0, 800)) }
+        repeat(27) { assertFalse(detector.acceptLevel(0.0, 800)) }
         assertTrue(detector.acceptLevel(0.0, 800))
         detector.reset()
         repeat(6) { assertFalse(detector.acceptLevel(0.0, 800)) }
@@ -36,7 +36,7 @@ class VoiceEndpointDetectorTest {
         repeat(6) { assertFalse(detector.acceptLevel(1000.0, 800)) }
         repeat(20) { assertFalse(detector.acceptLevel(2000.0, 800)) }
         assertFalse(detector.acceptLevel(4000.0, 800))
-        repeat(17) { assertFalse(detector.acceptLevel(1000.0, 800)) }
+        repeat(27) { assertFalse(detector.acceptLevel(1000.0, 800)) }
         assertTrue(detector.acceptLevel(1000.0, 800))
     }
 }

@@ -7,6 +7,10 @@ import kotlin.math.sqrt
  * Shared by Android's voice controller and iOS's native audio queue.
  */
 class VoiceEndpointDetector {
+    companion object {
+        /** Natural slow speech often contains pauses around one second. */
+        const val TRAILING_SILENCE_MS = 1400L
+    }
     private var totalSamples = 0L
     private var noiseAccum = 0.0
     private var noisePackets = 0
@@ -58,7 +62,7 @@ class VoiceEndpointDetector {
         }
         if (rms < threshold * 1.8) {
             silenceSamples += sampleCount
-            if (silenceSamples * 1000 / 16000 >= 900) fired = true
+            if (silenceSamples * 1000 / 16000 >= TRAILING_SILENCE_MS) fired = true
         } else silenceSamples = 0
         if (elapsedMs >= 30000) fired = true
         return fired

@@ -206,7 +206,8 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       // submenus and app content alike. A plain long-press never arrives:
       // the shell keeps it for the system menu (no in-process window claims
       // it).
-      if ((!options.holdToTalk && event.type === "short-then-long-press") ||
+      if ((!options.holdToTalk && event.type === "short-then-long-press"
+          && !stack.topMatches((layer) => Boolean(layer.claimsShortThenLongPress))) ||
           (options.holdToTalk && event.type === "click" && stack.isAtBase())) {
         openWindowMenu();
         await render(frameId);

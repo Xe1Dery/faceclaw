@@ -5,7 +5,14 @@ import { GrayImage, grayToNibble } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { activeAmbientCards } from "./ambient-cards";
-import { BATTERY_ICON_WIDTH, DENSE_BATTERY_BLOCK_HEIGHT, drawBattery, drawDenseBatteries, type BatteryDevice } from "../../graphics/battery";
+import {
+  BATTERY_ICON_WIDTH,
+  DENSE_BATTERY_BLOCK_HEIGHT,
+  drawBattery,
+  drawDenseBatteries,
+  drawDensePercentageBatteries,
+  type BatteryDevice,
+} from "../../graphics/battery";
 import { ALL_NOTIFICATIONS, readActiveNotificationIcons } from "../../native/notification-icons";
 import { NOTIFICATION_ICON_SIZE } from "../../native/notification-types";
 import { readPhoneBatteryState } from "../../native/phone-battery";
@@ -1116,6 +1123,9 @@ function drawBatteryBlock(image: GrayImage, items: BatteryItem[], barTop: number
   }
   if (mode === "dense") {
     return drawDenseBatteries(image, items, barRight - BATTERY_BLOCK_RIGHT_MARGIN, barTop + DENSE_TOP);
+  }
+  if (mode === "dense-percentage") {
+    return drawDensePercentageBatteries(image, items, barRight - BATTERY_BLOCK_RIGHT_MARGIN, barTop + DENSE_TOP);
   }
 
   const font = getDefaultSmallFont();

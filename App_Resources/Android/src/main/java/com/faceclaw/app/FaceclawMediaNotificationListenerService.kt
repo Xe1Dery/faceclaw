@@ -3,8 +3,10 @@ package com.faceclaw.app
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -486,6 +488,42 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             }
         }
 
+        /** Send a free-form reply through an active notification's RemoteInput action. */
+        @JvmStatic
+        fun invokeNotificationReply(key: String?, actionIndex: Int, replyText: String?): Boolean {
+            val service = activeService
+            val statusBarNotification = findActiveNotificationByKey(service, key)
+            val notification = statusBarNotification?.notification ?: return false
+            val actions: Array<Notification.Action>? = notification.actions
+            if (service == null || actions == null || actionIndex < 0 || actionIndex >= actions.size
+                || replyText.isNullOrBlank()) {
+                return false
+            }
+            val action = actions[actionIndex]
+            val intent = action.actionIntent ?: return false
+            val remoteInputs = action.remoteInputs?.filter { it.allowFreeFormInput }?.toTypedArray()
+                ?: emptyArray()
+            if (remoteInputs.isEmpty()) {
+                return false
+            }
+            val results = Bundle()
+            for (remoteInput in remoteInputs) {
+                results.putCharSequence(remoteInput.resultKey, replyText)
+            }
+            val fillInIntent = Intent()
+            RemoteInput.addResultsToIntent(remoteInputs, fillInIntent, results)
+            return try {
+                intent.send(service, 0, fillInIntent)
+                true
+            } catch (e: PendingIntent.CanceledException) {
+                Log.w(TAG, "notification reply pending intent was canceled", e)
+                false
+            } catch (t: Throwable) {
+                Log.w(TAG, "failed to send notification reply", t)
+                false
+            }
+        }
+
         @JvmStatic
         fun dismissNotification(key: String?): Boolean {
             val service = activeService
@@ -501,6 +539,25 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             } catch (t: Throwable) {
                 Log.w(TAG, "failed to dismiss notification", t)
                 return false
+            }
+        }
+
+        @JvmStatic
+        fun snoozeNotification(key: String?, durationMs: Long): Boolean {
+            val service = activeService
+            if (service == null || key == null || key.isEmpty() || durationMs <= 0L
+                || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                return false
+            }
+            return try {
+                service.snoozeNotification(key, durationMs)
+                true
+            } catch (e: SecurityException) {
+                Log.w(TAG, "notification access denied while snoozing notification", e)
+                false
+            } catch (t: Throwable) {
+                Log.w(TAG, "failed to snooze notification", t)
+                false
             }
         }
 
@@ -859,6 +916,8 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                     actionJson.put("index", index)
                     actionJson.put("title", title)
                     actionJson.put("enabled", action.actionIntent != null)
+                    actionJson.put("semanticAction", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) action.semanticAction else 0)
+                    actionJson.put("hasRemoteInput", action.remoteInputs?.any { it.allowFreeFormInput } == true)
                     actionsJson.put(actionJson)
                 }
             }

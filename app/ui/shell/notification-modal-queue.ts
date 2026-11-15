@@ -35,15 +35,17 @@ export class NotificationModalQueue<M> {
    * modal. A repost of the open notification needs nothing: its modal repaints
    * from the live notification.
    */
-  post(notificationKey: string, wokeScreen: boolean, standalone = wokeScreen): void {
+  /** True when this call opened now; false when it was already open or queued. */
+  post(notificationKey: string, wokeScreen: boolean, standalone = wokeScreen): boolean {
     if (this.current) {
       if (this.current.notificationKey !== notificationKey
           && !this.queued.some((entry) => entry.notificationKey === notificationKey)) {
         this.queued.push({ notificationKey, wokeScreen, standalone });
       }
-      return;
+      return false;
     }
     this.current = { modal: this.host.open(notificationKey, standalone), notificationKey, wokeScreen, standalone };
+    return true;
   }
 
   /**
@@ -51,11 +53,11 @@ export class NotificationModalQueue<M> {
    * are left, goes back to sleep if any of them woke the screen. Call before
    * unstacking the modal, so the removal it reports is already accounted for.
    */
-  closed(modal: M): void {
+  closed(modal: M, sleepWhenEmpty = true): void {
     const current = this.current;
     if (current?.modal !== modal) return;
     this.current = null;
-    if (!this.openNext(current.wokeScreen, current.standalone) && current.wokeScreen) {
+    if (!this.openNext(current.wokeScreen, current.standalone) && current.wokeScreen && sleepWhenEmpty) {
       this.host.sleep();
     }
   }

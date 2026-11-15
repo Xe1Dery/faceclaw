@@ -41,10 +41,10 @@ test("only one modal is open; later notifications wait and open as each closes",
 test("reposts of the open or a queued notification are not duplicated", () => {
   const host = makeHost();
   const queue = new NotificationModalQueue(host);
-  queue.post("a", false);
-  queue.post("a", false);
-  queue.post("b", false);
-  queue.post("b", false);
+  assert.equal(queue.post("a", false), true);
+  assert.equal(queue.post("a", false), false);
+  assert.equal(queue.post("b", false), false);
+  assert.equal(queue.post("b", false), false);
   assert.equal(host.opened.length, 1);
   assert.deepEqual(queue.queuedKeys(), ["b"]);
 });
@@ -76,6 +76,14 @@ test("a screen woken by a notification sleeps again once the last modal closes",
   assert.equal(host.opened[2].standalone, false);
   queue.closed(host.opened[2]);
   assert.equal(host.sleeps, 1);
+});
+
+test("an accepted handoff can close a wake-owned modal without sleeping the new chat", () => {
+  const host = makeHost();
+  const queue = new NotificationModalQueue(host);
+  queue.post("a", true);
+  queue.closed(host.opened[0], false);
+  assert.equal(host.sleeps, 0);
 });
 
 test("a modal over another standalone layer stays standalone without claiming its wake", () => {

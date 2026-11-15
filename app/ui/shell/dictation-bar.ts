@@ -6,6 +6,7 @@ import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voic
 import {
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
+  GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
   type InputEvent,
 } from "../gestures";
@@ -30,9 +31,10 @@ import { type Layer, type LayerActions, type LayerContext } from "../layers";
  * Gestures (the spec's, exactly):
  *   ● tap        send now (ends the utterance first, mid-dictation)
  *   ▲▼ scroll    clear and dictate again
+ *   — hold       append another utterance after the microphone stops
  *   ●● double    close
- * Gesture hints stay hidden until the phrase is finalized by silence; the
- * space below the phrase is reserved from the start so the bar never jumps.
+ * Gesture hints are visible from the first recording frame, so the controls
+ * never pop in late or change the bar's size when the phrase finalizes.
  * With auto-send the finalized phrase shows a shrinking line at the bar's
  * bottom edge for AUTO_SEND_MS; a tap sends before it runs out.
  */
@@ -43,7 +45,7 @@ const BAR_LINE_BASE = 44;
 const BAR_LINE_STEP = 16;
 /** Hard cap on wrapped lines; the tail of a longer phrase scrolls inside. */
 const MAX_LINES = 4;
-/** Reserved hint-row block at the bar's bottom (drawn only once finalized). */
+/** Permanent hint-row block at the bar's bottom. */
 const HINT_BLOCK = 18;
 /** Mic glyph box, left of the phrase. */
 const MIC_SIZE = 24;
@@ -53,11 +55,17 @@ const CAPTURE_HARD_MS = 30_000;
 const FINALIZE_MS = 2_000;
 /** Auto-send grace shown as a shrinking line at the bar's bottom edge. */
 export const AUTO_SEND_MS = 1_500;
+/** Failed submission remains readable before the bar returns to its caller. */
+export const SUBMIT_ERROR_MS = 3_000;
 
 /** What the finalized phrase means once the wearer sends it. */
 export type DictationOutcome = { action: "sent"; text: string } | { action: "closed" };
+export type DictationSubmitResult =
+  | { accepted: true; afterDismiss?: () => void }
+  | { accepted: false; error: string };
+export type DictationSubmission = DictationSubmitResult | Promise<DictationSubmitResult>;
 
-type Phase = "listening" | "finishing" | "finalized";
+type Phase = "listening" | "finishing" | "finalized" | "submitting" | "error";
 
 export type DictationBarOptions = {
   actions: LayerActions;
@@ -67,14 +75,22 @@ export type DictationBarOptions = {
   dismiss: () => void;
   /** Fires once: the sent phrase, or a close. */
   onDone: (outcome: DictationOutcome) => void;
+  /** Validate/execute a specialized destination before the bar disappears. */
+  onSubmit?: (text: string) => DictationSubmission;
   /** Auto-send after the phrase finalizes (the skip-confirmation setting). */
   autoSend?: boolean;
   /** Locked-glasses presentation (spec 2): the bar arrives with the screen's
    * brightness transition, the interface is not raised behind it. */
   standalone?: boolean;
+  /** A specialized caller can return to its underlying choice instead of retrying silent capture. */
+  closeOnEmpty?: boolean;
+  /** A standalone bar over another standalone popup may keep that popup visible. */
+  preserveStandaloneBelow?: boolean;
 };
 
 export class DictationBarLayer implements Layer {
+  /** The shell normally owns a hold; this overlay uses it for "append". */
+  readonly claimsLongPress = true;
   private phase: Phase = "listening";
   private listening = false;
   /** Bridge guidance shown while nothing is heard yet (e.g. "check your phone"). */
@@ -85,11 +101,16 @@ export class DictationBarLayer implements Layer {
   private capturing = false;
   private stoppingCapture = false;
   private stopGeneration = 0;
+  /** Ignore the old recognizer's trailing transcript while "redo" stops it. */
+  private restartingCapture = false;
+  /** Several UI paths may wait on the same native stop; call it only once. */
+  private stopCallbacks: Array<() => void> = [];
   /** A tap ended the utterance; the send waits for the trailing final. */
   private sendOnFinal = false;
   private hardTimer: ReturnType<typeof setTimeout> | null = null;
   private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
   private autoSendTimer: ReturnType<typeof setTimeout> | null = null;
+  private submitErrorTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
   private unsubscribeSpeechEnd: (() => void) | null = null;
@@ -99,7 +120,10 @@ export class DictationBarLayer implements Layer {
   private readonly interfaceBottom: () => number;
   private readonly dismiss: () => void;
   private readonly onDone: (outcome: DictationOutcome) => void;
+  private readonly onSubmit: ((text: string) => DictationSubmission) | null;
   private readonly autoSend: boolean;
+  private readonly closeOnEmpty: boolean;
+  private readonly preserveStandaloneBelow: boolean;
   /** Public: the stack reads it to hide the window surfaces under the bar (spec 2). */
   readonly standalone: boolean;
   /** Slide-in progress, 0 at the screen's bottom edge, 1 at rest (spec 4:
@@ -113,7 +137,10 @@ export class DictationBarLayer implements Layer {
     this.interfaceBottom = options.interfaceBottom;
     this.dismiss = options.dismiss;
     this.onDone = options.onDone;
+    this.onSubmit = options.onSubmit ?? null;
     this.autoSend = options.autoSend ?? false;
+    this.closeOnEmpty = options.closeOnEmpty ?? false;
+    this.preserveStandaloneBelow = options.preserveStandaloneBelow ?? false;
     this.standalone = options.standalone ?? false;
     if (!this.standalone) {
       this.slide = 0;
@@ -149,14 +176,16 @@ export class DictationBarLayer implements Layer {
     // Standalone (locked glasses): an opaque canvas of its own, so the
     // interface stays down and only the bar shows (spec 2, mockup 11).
     const image = this.standalone
-      ? new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK)
+      ? (this.preserveStandaloneBelow
+          ? paintBelow()
+          : new GrayImage(screenWidth(), screenHeight(), SHELL_OPAQUE_BLACK))
       : paintBelow();
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
     const x = 32;
     const width = screenWidth() - 64;
     const lines = this.shownLines(medium, width);
-    const hintShown = this.phase === "finalized";
+    const hintShown = true;
     const height =
       BAR_LINE_BASE + Math.max(0, lines.length - 1) * BAR_LINE_STEP + (hintShown ? HINT_BLOCK : 0);
     // A standalone bar hides the interface, but keeps its geometry: Display
@@ -171,30 +200,38 @@ export class DictationBarLayer implements Layer {
     image.fillRect(x, y, width, height, SHELL_OPAQUE_BLACK);
     image.drawRect(x, y, width, height, 120);
     // The panel cannot express a reliable per-element brightness difference.
-    // Use shape instead: filled while recording, outline-only once controls
-    // appear for a finalized phrase.
-    drawMicGlyph(image, x + 12, y + 10, MIC_SIZE, 235, !hintShown);
+    // Use shape instead: filled while recording, outline-only once the phrase
+    // is finalized. Controls are visible in both phases.
+    drawMicGlyph(
+      image,
+      x + 12,
+      y + 10,
+      MIC_SIZE,
+      235,
+      this.phase === "listening" || this.phase === "finishing",
+    );
     const textX = x + 12 + MIC_SIZE + 12;
     if (lines.length) {
       lines.forEach((line, i) => image.drawText(medium, textX, y + 14 + i * BAR_LINE_STEP, line, 235));
     } else {
       image.drawText(small, textX, y + 16, this.placeholder(), 150);
     }
-    if (hintShown) {
-      image.drawText(
-        small,
-        textX,
-        y + height - small.lineHeight - 3,
-        `${GESTURE_CLICK} отправить   ${GESTURE_SCROLL} заново   ${GESTURE_DOUBLE_CLICK} закрыть`,
-        150,
-      );
-      if (this.autoSendDeadline !== null) {
-        // The grace line: full width at the countdown's start, shrinking to
-        // the right edge as it runs out.
-        const remaining = Math.max(0, this.autoSendDeadline - Date.now());
-        const w = Math.max(0, Math.round((width * remaining) / AUTO_SEND_MS));
-        if (w > 0) image.fillRect(x + width - w, y + height - 2, w, 2, 200);
-      }
+    const hint = this.phase === "finalized"
+      ? `${GESTURE_CLICK} отправить   ${GESTURE_SCROLL} заново   ${GESTURE_LONG_PRESS} дополнить   ${GESTURE_DOUBLE_CLICK} закрыть`
+      : `${GESTURE_CLICK} отправить   ${GESTURE_SCROLL} заново   ${GESTURE_DOUBLE_CLICK} закрыть`;
+    image.drawText(
+      small,
+      textX,
+      y + height - small.lineHeight - 3,
+      hint,
+      150,
+    );
+    if (this.autoSendDeadline !== null) {
+      // The grace line: full width at the countdown's start, shrinking to
+      // the right edge as it runs out.
+      const remaining = Math.max(0, this.autoSendDeadline - Date.now());
+      const w = Math.max(0, Math.round((width * remaining) / AUTO_SEND_MS));
+      if (w > 0) image.fillRect(x + width - w, y + height - 2, w, 2, 200);
     }
     return image;
   }
@@ -211,6 +248,9 @@ export class DictationBarLayer implements Layer {
       if (event.type === "double-click") this.dismiss();
       return;
     }
+    // Submission errors are deliberately stable for three seconds; input
+    // cannot accidentally erase the reason before it has been read.
+    if (this.phase === "error" || this.phase === "submitting") return;
     switch (event.type) {
       case "click":
         this.requestSend();
@@ -218,6 +258,9 @@ export class DictationBarLayer implements Layer {
       case "scroll-up":
       case "scroll-down":
         this.restartDictation();
+        return;
+      case "long-press":
+        this.appendDictation();
         return;
       case "double-click":
         this.close();
@@ -254,18 +297,26 @@ export class DictationBarLayer implements Layer {
   private restartDictation(): void {
     if (this.done) return;
     this.clearAutoSend();
+    this.clearHardTimer();
+    this.clearFinalizeTimer();
     this.sendOnFinal = false;
     this.liveText = "";
     this.finalizedText = "";
     if (this.isCapturing()) {
       // Stop, then re-open the mic once the stop settles, so the recognizer
-      // starts a fresh utterance instead of continuing the old one.
+      // starts a fresh utterance instead of continuing the old one. Ignore
+      // trailing partial/final events and clear once more at the stop
+      // boundary: otherwise the old final can repaint text after the scroll.
+      this.restartingCapture = true;
       this.phase = "finishing";
       this.stopCapture(() => {
         if (this.done) return;
+        this.liveText = "";
+        this.finalizedText = "";
         this.phase = "listening";
         this.hardTimer = setTimeout(() => this.endCapture("hard"), CAPTURE_HARD_MS);
         void this.actions.startVoiceCapture(true);
+        this.restartingCapture = false;
         this.actions.requestRender();
       });
     } else if (this.capturing) {
@@ -275,6 +326,18 @@ export class DictationBarLayer implements Layer {
       this.hardTimer = setTimeout(() => this.endCapture("hard"), CAPTURE_HARD_MS);
       void this.actions.startVoiceCapture(true);
     }
+    this.actions.requestRender();
+  }
+
+  /** — after finalization: keep the phrase and record one more utterance. */
+  private appendDictation(): void {
+    if (this.done || this.phase !== "finalized") return;
+    this.clearAutoSend();
+    this.sendOnFinal = false;
+    this.liveText = "";
+    this.phase = "listening";
+    this.hardTimer = setTimeout(() => this.endCapture("hard"), CAPTURE_HARD_MS);
+    void this.actions.startVoiceCapture(true);
     this.actions.requestRender();
   }
 
@@ -323,6 +386,10 @@ export class DictationBarLayer implements Layer {
       // listening so the wearer can try again without re-opening the bar.
       if (this.sendOnFinal) {
         this.sendOnFinal = false;
+        if (this.closeOnEmpty) {
+          this.close();
+          return;
+        }
         this.phase = "listening";
         this.hardTimer = setTimeout(() => this.endCapture("hard"), CAPTURE_HARD_MS);
         void this.actions.startVoiceCapture(true);
@@ -356,7 +423,6 @@ export class DictationBarLayer implements Layer {
       this.close();
       return;
     }
-    this.done = true;
     this.clearAutoSend();
     this.clearAllTimers();
     this.unsubscribeListeners();
@@ -364,6 +430,44 @@ export class DictationBarLayer implements Layer {
       this.capturing = false;
       this.stopCapture(() => {});
     }
+    let submission: DictationSubmission = { accepted: true };
+    if (this.onSubmit) {
+      try {
+        submission = this.onSubmit(text);
+      } catch (error) {
+        console.warn("dictation submit failed", error);
+        submission = { accepted: false, error: "Не удалось отправить" };
+      }
+    }
+    if (isPromiseLike(submission)) {
+      this.phase = "submitting";
+      this.actions.requestRender();
+      void submission.then(
+        (result) => this.finishSubmission(text, result),
+        (error) => {
+          console.warn("dictation submit failed", error);
+          this.finishSubmission(text, { accepted: false, error: "Не удалось отправить" });
+        },
+      );
+      return;
+    }
+    this.finishSubmission(text, submission);
+  }
+
+  private finishSubmission(text: string, submission: DictationSubmitResult): void {
+    // The layer may have been removed while a network-backed action was in
+    // flight. Never resurrect or close something that no longer owns input.
+    if (this.done) return;
+    if ("error" in submission) {
+      this.phase = "error";
+      this.liveText = "";
+      this.finalizedText = "";
+      this.detail = submission.error;
+      this.submitErrorTimer = setTimeout(() => this.close(), SUBMIT_ERROR_MS);
+      this.actions.requestRender();
+      return;
+    }
+    this.done = true;
     // Pop first, then report (device issue 5, APK 823): the sent callback
     // can push a layer of its own (the assistant raises its chat window over
     // the bar), and the dismiss pops the top only — run after such a push,
@@ -371,6 +475,7 @@ export class DictationBarLayer implements Layer {
     // survives the window's close and swallows input until the timeout.
     this.dismiss();
     this.onDone({ action: "sent", text });
+    submission.afterDismiss?.();
   }
 
   private transcript(): string {
@@ -380,7 +485,7 @@ export class DictationBarLayer implements Layer {
   }
 
   private onTranscript(event: VoiceTranscriptEvent): void {
-    if (this.done || (this.phase !== "listening" && this.phase !== "finishing")) return;
+    if (this.done || this.restartingCapture || (this.phase !== "listening" && this.phase !== "finishing")) return;
     if (event.text) this.liveText = event.text;
     if (event.isFinal && this.liveText.trim() && this.phase === "finishing") {
       // The trailing final landed: no reason to wait out the finalize window.
@@ -406,12 +511,15 @@ export class DictationBarLayer implements Layer {
 
   /** Native stop can outlast its join; mirror VoiceInputLayer's generation guard. */
   private stopCapture(onStopped: () => void): void {
+    this.stopCallbacks.push(onStopped);
+    if (this.stoppingCapture) return;
     const generation = ++this.stopGeneration;
     this.stoppingCapture = true;
     const afterStop = () => {
       if (generation !== this.stopGeneration) return;
       this.stoppingCapture = false;
-      onStopped();
+      const callbacks = this.stopCallbacks.splice(0);
+      for (const callback of callbacks) callback();
       this.actions.requestRender();
     };
     const stopped = this.actions.stopVoiceCapture();
@@ -419,10 +527,7 @@ export class DictationBarLayer implements Layer {
       afterStop();
       return;
     }
-    void Promise.resolve(stopped).then(afterStop, () => {
-      if (generation !== this.stopGeneration) return;
-      this.stoppingCapture = false;
-    });
+    void Promise.resolve(stopped).then(afterStop, afterStop);
   }
 
   private clearHardTimer(): void {
@@ -450,6 +555,10 @@ export class DictationBarLayer implements Layer {
     this.clearHardTimer();
     this.clearFinalizeTimer();
     this.clearAutoSend();
+    if (this.submitErrorTimer !== null) {
+      clearTimeout(this.submitErrorTimer);
+      this.submitErrorTimer = null;
+    }
   }
 
   private unsubscribeListeners(): void {
@@ -460,6 +569,10 @@ export class DictationBarLayer implements Layer {
     this.unsubscribeSpeechEnd?.();
     this.unsubscribeSpeechEnd = null;
   }
+}
+
+function isPromiseLike(value: DictationSubmission): value is Promise<DictationSubmitResult> {
+  return Boolean(value) && typeof (value as Promise<DictationSubmitResult>).then === "function";
 }
 
 /**

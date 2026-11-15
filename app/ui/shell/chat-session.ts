@@ -10,6 +10,7 @@ import {
 } from "../gestures";
 import { appViewportRect, SHELL_OPAQUE_BLACK } from "./geometry";
 import { type Layer, type LayerActions, type LayerContext } from "../layers";
+import { centeredTextY } from "../metrics";
 
 /**
  * The chat session window (notes/assistant-redesign-spec.md §3): a window
@@ -62,6 +63,9 @@ const HINT_HEIGHT = 20;
 const LINK_SQUARE = 12;
 
 type Phase = "working" | "done" | "error";
+type ChatLayoutItem =
+  | { kind: "text"; text: string; value: number; height: number; font: "medium" | "small" }
+  | { kind: "divider"; height: number };
 
 export class ChatSessionLayer implements Layer {
   /** The band this window follows: the Display mode's, per-app overridable
@@ -161,11 +165,14 @@ export class ChatSessionLayer implements Layer {
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
     // header, inside the viewport (the status bar's rows sit above it)
-    image.drawText(small, view.x + MARGIN, view.y + 8, "OpenClaw", 170);
+    image.drawText(small, view.x + MARGIN, centeredTextY(small, view.y, HEADER_HEIGHT), "OpenClaw", 170);
     paintLinkSquare(image, view.x + view.width - MARGIN - LINK_SQUARE, view.y + 10);
     // body
     const headerHeight = Math.min(HEADER_HEIGHT, view.height);
-    const contentTop = view.y + headerHeight;
+    const headerBottom = view.y + headerHeight;
+    // Fixed title boundary. Unlike turn dividers this reaches both frame edges.
+    image.drawLine(view.x, headerBottom, view.x + view.width, headerBottom, 70);
+    const contentTop = Math.min(view.y + view.height, headerBottom + 6);
     const contentBottom = view.y + view.height - HINT_HEIGHT - 6;
     const lines = this.layout(medium, view.width - MARGIN * 2);
     this.contentHeight = lines.reduce((sum, line) => sum + line.height, 0);
@@ -175,7 +182,14 @@ export class ChatSessionLayer implements Layer {
     this.scrollOffset = Math.min(Math.max(0, this.scrollOffset), maxOffset);
     let y = contentTop - this.scrollOffset;
     for (const line of lines) {
-      if (y + line.height > contentTop - medium.lineHeight && y < contentBottom) {
+      if (line.kind === "divider") {
+        if (y >= contentTop && y + line.height <= contentBottom) {
+          const ruleY = y + Math.floor(line.height / 2);
+          image.drawLine(view.x + MARGIN, ruleY, view.x + view.width - MARGIN, ruleY, 70);
+        }
+      } else if (y >= contentTop && y + line.height <= contentBottom) {
+        // Only complete lines inside the body are drawn. A partially scrolled
+        // line must not leak into the fixed OpenClaw title or footer hint.
         image.drawText(line.font === "medium" ? medium : small, view.x + MARGIN, y, line.text, line.value);
       }
       y += line.height;
@@ -187,6 +201,10 @@ export class ChatSessionLayer implements Layer {
     // footer hint
     const hint = this.hintText(small);
     if (hint) image.drawText(small, view.x + MARGIN, view.y + view.height - HINT_HEIGHT, hint, 170);
+    // The shell chrome's rounded frame lives on a lower plane. This overlay's
+    // opaque panel used to cover its inner corner pixels, producing torn
+    // edges on-device. Redraw one continuous border on this top plane.
+    image.drawRect(view.x, view.y, view.width, view.height, 120);
     return image;
   }
 
@@ -220,44 +238,50 @@ export class ChatSessionLayer implements Layer {
     this.followBottom = false;
     // Back at the bottom: streaming resumes following.
     const view = appViewportRect("min", this.appId);
-    const viewHeight = view.height - Math.min(HEADER_HEIGHT, view.height) - HINT_HEIGHT - 6;
+    const viewHeight = view.height - Math.min(HEADER_HEIGHT, view.height) - HINT_HEIGHT - 12;
     if (this.scrollOffset >= this.contentHeight - viewHeight - 1) this.followBottom = true;
     this.actions.requestRender();
   }
 
   private hintText(small: { measureText(t: string): number }): string {
-    if (this.phase === "error") return `${this.status}   ${GESTURE_DOUBLE_CLICK} закрыть`;
-    if (this.phase === "working") return `${GESTURE_SCROLL} читать   ${GESTURE_DOUBLE_CLICK} прервать`;
-    return `${GESTURE_CLICK} продолжить   ${GESTURE_DOUBLE_CLICK} выйти`;
+    if (this.phase === "error") return `${GESTURE_SCROLL} прокрутка   ${this.status}   ${GESTURE_DOUBLE_CLICK} закрыть`;
+    if (this.phase === "working") return `${GESTURE_SCROLL} прокрутка   ${GESTURE_DOUBLE_CLICK} прервать`;
+    return `${GESTURE_SCROLL} прокрутка   ${GESTURE_CLICK} продолжить   ${GESTURE_DOUBLE_CLICK} выйти`;
   }
 
   /** The thread as wrapped lines: user prefixed with "> ", both roles solid, trail last. */
-  private layout(medium: { lineHeight: number; measureText(t: string): number; getGlyph(c: number): { dwidthX: number } | undefined }, width: number): Array<{ text: string; value: number; height: number; font: "medium" | "small" }> {
+  private layout(medium: { lineHeight: number; measureText(t: string): number; getGlyph(c: number): { dwidthX: number } | undefined }, width: number): ChatLayoutItem[] {
     const small = getDefaultSmallFont();
-    const out: Array<{ text: string; value: number; height: number; font: "medium" | "small" }> = [];
+    const out: ChatLayoutItem[] = [];
+    let previousRole: ChatMessage["role"] | null = null;
     for (const message of this.history) {
+      if (previousRole === "agent" && message.role === "user") {
+        out.push({ kind: "divider", height: 10 });
+      }
       if (message.role === "user") {
         for (const line of wrapText(medium, `> ${message.text}`, width, { breakLongWords: true })) {
-          out.push({ text: line, value: 255, height: medium.lineHeight, font: "medium" });
+          out.push({ kind: "text", text: line, value: 255, height: medium.lineHeight, font: "medium" });
         }
+        previousRole = message.role;
         continue;
       }
       for (const line of wrapText(medium, message.text, width, { breakLongWords: true })) {
-        out.push({ text: line, value: 255, height: medium.lineHeight, font: "medium" });
+        out.push({ kind: "text", text: line, value: 255, height: medium.lineHeight, font: "medium" });
       }
+      previousRole = message.role;
     }
     if (this.streamingText) {
       for (const line of wrapText(medium, this.streamingText, width, { breakLongWords: true })) {
-        out.push({ text: line, value: 255, height: medium.lineHeight, font: "medium" });
+        out.push({ kind: "text", text: line, value: 255, height: medium.lineHeight, font: "medium" });
       }
     } else if (this.actionTrail) {
       // The trail sits exactly where the answer will print.
       for (const line of wrapText(small, this.actionTrail, width, { breakLongWords: true })) {
-        out.push({ text: line, value: 130, height: small.lineHeight, font: "small" });
+        out.push({ kind: "text", text: line, value: 130, height: small.lineHeight, font: "small" });
       }
     }
     if (this.phase === "working" && !this.streamingText && !this.actionTrail) {
-      out.push({ text: "Thinking...", value: 130, height: small.lineHeight, font: "small" });
+      out.push({ kind: "text", text: "Thinking...", value: 130, height: small.lineHeight, font: "small" });
     }
     return out;
   }

@@ -249,7 +249,10 @@ test('empty capture, rejection and closing never submit stale speech', async () 
   }
 });
 
-function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {}) {
+function shellEnv({
+  wakeAction = 'voice-input', skipConfirmation = false, bridgeConnected = true,
+  activeNotifications = [], customProfile = null, notificationIcon = null, appClaimsTapHold = false,
+} = {}) {
   const gestures = load('app/ui/gestures.ts', {});
   class Image { constructor(width = 576, height = 260) { this.width = width; this.height = height; } }
   const images = { GrayImage: Image, G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480 };
@@ -268,10 +271,13 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
   }
   const voiceDialogs = [];
   const dictationBars = [];
+  const customNotificationLayers = [];
+  const proactiveDialogLayers = [];
+  const chatSessionLayers = [];
   const settings = { wakeWordActionSetting: { get: () => wakeAction }, brightnessSetting: { get: () => 'auto' },
     assistantSkipConfirmationSetting: { get: () => skipConfirmation },
     assistantBackendSetting: { get: () => 'external' } };
-  const bridge = { assistantBridge: { isConnected: () => true } };
+  const bridge = { assistantBridge: { isConnected: () => bridgeConnected } };
   const { shell, rawInputEventToInputEvent } = load('app/ui/shell/shell.ts', {
     '../../graphics/shell-scene': { encodeShellScene: () => new Uint8Array([0, 0]) },
     '../../graphics/image': images, '../../graphics/plane': {}, '../../graphics/ui-fonts': {}, '../../g2/events': load('app/g2/events.ts', {}),
@@ -282,9 +288,16 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
       startCapture() {}
       onRemoved() { this.options.onClosed(); }
     } }, './keyboard-input': {}, './voice-activity': { voiceActivity: { setActive() {} } }, './assistant': {},
-    './reminder-layer': {}, './proactive-dialog-layer': {},
+    './reminder-layer': {}, './proactive-dialog-layer': { ProactiveDialogLayer: class {
+      constructor(...args) { this.args = args; proactiveDialogLayers.push(this); }
+      paint(_ctx, below) { return below(); }
+      handleInput() {}
+      onRemoved() {}
+    } },
     './chat-session': { ChatSessionLayer: class {
-      constructor(_actions, _callbacks, history) { this.history = history ?? []; }
+      constructor(_actions, callbacks, history) {
+        this.callbacks = callbacks; this.history = history ?? []; chatSessionLayers.push(this);
+      }
       messages() { return this.history; }
       startTurn() {}
       appendUser(text) { this.history.push({ role: 'user', text }); }
@@ -300,7 +313,35 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
     '../notifications': {}, '../dashboard-settings': settings, './ambient-cards': {},
     './chrome-layer': { ShellChromeLayer: class {} }, './modal-layer': {}, './tool-debug-layer': {},
     './brightness-picker-layer': {}, './notification-modal-queue': load('app/ui/shell/notification-modal-queue.ts', {}),
-    '../../native/notification-icons': {}, '../../native/notification-sources': {},
+    './persistent-notification-reopener': load('app/ui/shell/persistent-notification-reopener.ts', {}),
+    '../custom-notifications': {
+      customNotificationProfileFor: () => customProfile,
+      tickTickTaskLabel: (notification) => notification.title,
+    },
+    '../../integrations/ticktick-mcp': {
+      rescheduleTickTickNotification: async () => ({ ok: true, task: {} }),
+    },
+    './custom-notification-layer': { CustomNotificationLayer: class {
+      constructor(...args) {
+        this.args = args; this.standalone = args[4]; this.inputs = [];
+        this.claimsLongPress = Boolean(args[0]?.longPressDecision || args[0]?.longPressOpensVoice);
+        this.claimsShortThenLongPress = Boolean(args[0]?.shortThenLongPressDecision);
+        customNotificationLayers.push(this);
+      }
+      paint(_ctx, below) { return below(); }
+      handleInput(event) { this.inputs.push(event.type); }
+      outlivesNotification() { return false; }
+      onRemoved() { this.args[3].removed(true); }
+    } },
+    '../../native/notification-icons': {
+      ALL_NOTIFICATIONS: 50,
+      readActiveNotifications: () => activeNotifications,
+      invokeNotificationAction() { return true; },
+      invokeNotificationReply() { return true; },
+      dismissNotification() { return true; },
+      snoozeNotification() { return true; },
+      readNotificationIconByKey: () => ({ icon: notificationIcon, stale: false }),
+    }, '../../native/notification-sources': { shouldShowNotificationOnGlasses: () => true },
     '../../assistant/tool-registry': {}, './geometry': {
       sidebarWidth: () => 64, minWindowTop: () => 96, switcherPosition: () => 'left', uiDepth: () => 0,
       interfaceBottom: () => 384,
@@ -319,7 +360,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
   let microphone = false;
   const app = createInProcessWindow({
     appId: 'ai-chat', windowId: 'ai-chat', title: 'AI Chat', iconLetter: 'AI', closeable: true, holdToTalk: true,
-    baseLayer: { paint: () => new Image(), handleInput(event) {
+    baseLayer: { claimsShortThenLongPress: appClaimsTapHold, paint: () => new Image(), handleInput(event) {
       input.push(event.type);
       if (event.type === 'long-press') microphone = true;
       if (event.type === 'long-press-release') microphone = false;
@@ -333,7 +374,8 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
   });
   shell.registerWindow(app.window);
   shell.focusWindow('ai-chat');
-  return { shell, app, input, menus, voiceDialogs, dictationBars, rawInputEventToInputEvent, microphone: () => microphone, event: (type) => gestures.makeInputEvent({ type }) };
+  return { shell, app, input, menus, voiceDialogs, dictationBars, customNotificationLayers, proactiveDialogLayers, chatSessionLayers,
+    rawInputEventToInputEvent, microphone: () => microphone, event: (type) => gestures.makeInputEvent({ type }) };
 }
 
 test('wakeword wakes the shared shell, respects its action, and opens only one hands-free dictation bar', async () => {
@@ -373,6 +415,107 @@ test('the controller pre-wake marker keeps a wakeword dictation standalone', asy
   assert.equal(env.shell.isScreenOn(), false, 'closing a dark-screen dictation returns to sleep');
 });
 
+test('dictation opened over a standalone notification keeps the regular interface hidden', () => {
+  const env = shellEnv({ skipConfirmation: true });
+  env.shell.stack.push({
+    standalone: true,
+    paint: (_ctx, below) => below(),
+    handleInput() {},
+  });
+  assert.equal(env.shell.openAssistantDictation(), true);
+  assert.equal(env.dictationBars.length, 1);
+  assert.equal(env.dictationBars[0].standalone, true);
+  env.dictationBars[0].onDone({ action: 'closed' });
+  assert.equal(env.shell.isScreenOn(), true, 'closing inherited standalone dictation returns to its notification');
+});
+
+test('local notification dictation can start while Nano is offline', () => {
+  const env = shellEnv({ bridgeConnected: false });
+  assert.equal(env.shell.openAssistantDictation({ allowWithoutAssistant: true, onSent() {} }), true);
+  assert.equal(env.dictationBars.length, 1);
+});
+
+test('a TickTick notification selects the application-specific layer from the shared queue', () => {
+  const notification = { key: 'tick-1', packageName: 'com.ticktick.task' };
+  const profile = { id: 'ticktick' };
+  const env = shellEnv({ activeNotifications: [notification], customProfile: profile });
+  env.shell.openNotificationModal('tick-1', false);
+  assert.equal(env.customNotificationLayers.length, 1);
+  assert.equal(env.customNotificationLayers[0].args[0], profile);
+  assert.equal(env.customNotificationLayers[0].args[1], notification);
+});
+
+test('TickTick dictation preserves its popup and closes silent recognition back to it', () => {
+  const notification = { key: 'tick-1', packageName: 'com.ticktick.task' };
+  const profile = { id: 'ticktick' };
+  const env = shellEnv({ activeNotifications: [notification], customProfile: profile });
+  env.shell.openNotificationModal('tick-1', false);
+  const opened = env.customNotificationLayers[0].args[3].openVoice(() => {}, () => {});
+  assert.equal(opened, true);
+  assert.equal(env.dictationBars[0].closeOnEmpty, true);
+  assert.equal(env.dictationBars[0].preserveStandaloneBelow, true);
+});
+
+test('glasses.dialog_open dictation keeps the proactive question visible below it', () => {
+  const env = shellEnv();
+  const promise = env.shell.showProactiveDialog({ text: 'Во сколько перенести встречу?', ttlMs: 45_000 });
+  assert.ok(promise);
+  assert.equal(env.proactiveDialogLayers.length, 1);
+  const delegateAnswer = env.proactiveDialogLayers[0].args[5];
+  assert.equal(delegateAnswer(() => {}), true);
+  assert.equal(env.dictationBars.length, 1);
+  assert.equal(env.dictationBars[0].preserveStandaloneBelow, true);
+});
+
+test('a Telegram popup claims voice hold and tap-then-hold before shell menus', async () => {
+  const notification = { key: 'telegram-1', packageName: 'org.telegram.messenger' };
+  const icon = { width: 25, height: 25 };
+  const profile = { id: 'telegram', sourceIcon: true, longPressOpensVoice: true, shortThenLongPressDecision() {} };
+  const env = shellEnv({ activeNotifications: [notification], customProfile: profile, notificationIcon: icon });
+  env.shell.openNotificationModal('telegram-1', false);
+  assert.equal(env.customNotificationLayers[0].args[3].sourceIcon, icon,
+    'the popup receives the icon extracted from this Android notification');
+  await env.shell.receiveInput(env.event('long-press'));
+  assert.deepEqual(env.customNotificationLayers[0].inputs, ['long-press']);
+  await env.shell.receiveInput(env.event('short-then-long-press'));
+  assert.deepEqual(env.customNotificationLayers[0].inputs, ['long-press', 'short-then-long-press']);
+  assert.deepEqual(env.menus, [], 'the system menu does not replace Telegram');
+});
+
+test('double-tap closing an OpenClaw session immediately blanks the lenses', () => {
+  const env = shellEnv();
+  const session = {
+    isTurnActive: () => false,
+    sendUtterance() {},
+    cancel() {},
+  };
+  env.shell.getAssistantConversations = () => ({
+    ensureSession: () => session,
+    current: () => ({ model: 'terra', reasoning: 'default', session }),
+  });
+  env.shell.removeWindow('ai-chat');
+  assert.equal(env.shell.sendToAssistant('проверка'), true);
+  assert.equal(env.chatSessionLayers.length, 1);
+  assert.equal(env.shell.isScreenOn(), true);
+  env.chatSessionLayers[0].callbacks.onClose();
+  assert.equal(env.shell.isScreenOn(), false);
+});
+
+test('an unresolved TickTick popup replaces the normal interface on the next wake', async () => {
+  const notification = { key: 'tick-1', packageName: 'com.ticktick.task' };
+  const profile = { id: 'ticktick', reappearAfterMs: 60_000 };
+  const env = shellEnv({ activeNotifications: [notification], customProfile: profile });
+  env.shell.openNotificationModal('tick-1', false);
+  assert.equal(env.customNotificationLayers.length, 1);
+  env.shell.sleep();
+  assert.equal(env.shell.isScreenOn(), false);
+  await env.shell.receiveInput(env.event('display-wake'));
+  assert.equal(env.shell.isScreenOn(), true);
+  assert.equal(env.customNotificationLayers.length, 2);
+  assert.equal(env.customNotificationLayers[1].standalone, true, 'the regular app interface stays hidden');
+  env.shell.notificationRemoved('tick-1');
+});
+
 test('chat holds bypass the escape timer; release, menus and double tap follow the requested routing', async () => {
   const env = shellEnv();
   await env.shell.receiveInput(env.event('long-press'));
@@ -408,6 +551,13 @@ test('ordinary apps retain long-press system menu and games retain the escape ti
   assert.notEqual(env.shell.escapeMenuTimer, null);
   await env.shell.receiveInput(env.event('long-press-release'));
   assert.equal(env.shell.escapeMenuTimer, null);
+});
+
+test('an in-process base layer can claim tap-then-hold instead of opening its window menu', async () => {
+  const env = shellEnv({ appClaimsTapHold: true });
+  await env.app.window.handleInput(env.event('short-then-long-press'), 1);
+  assert.deepEqual(env.input, ['short-then-long-press']);
+  assert.deepEqual(env.menus, []);
 });
 
 function chatLayerEnv() {

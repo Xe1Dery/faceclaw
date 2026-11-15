@@ -33,7 +33,7 @@ export type NightscoutSettings = {
   siteUrl: string;
   apiToken: string;
 };
-export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-percentage" | "dense";
+export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-percentage" | "dense" | "dense-percentage";
 /** When a top-bar battery indicator is shown: always, only below 50%, or never. */
 export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
@@ -282,9 +282,9 @@ export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMod
   label: "Style",
   storageKey: "dashboard.systemCard.batteryDisplayMode",
   defaultValue: "dense",
-  values: ["icon", "percentage", "stacked", "stacked-percentage", "dense"],
+  values: ["icon", "percentage", "stacked", "stacked-percentage", "dense", "dense-percentage"],
   formatValue: batteryDisplayModeLabel,
-  description: "How the top bar shows battery levels: a gauge icon or exact percentage beside the label, a compact gauge or percentage with the label stacked above it, or (dense) a device icon beside each gauge with two indicators stacked per column.",
+  description: "How the top bar shows battery levels: a gauge icon or exact percentage beside the label, a compact gauge or percentage with the label stacked above it, or a dense two-row layout with device icons beside gauges or compact percentages.",
 });
 
 /** Below this charge level a "Below 50%" indicator becomes visible. */
@@ -1205,6 +1205,27 @@ export const sonioxApiKeySetting = new ConfigSettingString({
   description: "Soniox API key, used when Soniox is the transcription provider.",
 });
 
+/**
+ * TickTick's account API token (TickTick web -> Settings -> Account -> API
+ * Token). It authorizes the official streamable-HTTP MCP endpoint used by
+ * deterministic notification actions and the Glanceboard task widget. The
+ * value lives in the Android settings store like the other API keys and is
+ * never part of the repository or APK.
+ */
+export const tickTickApiTokenSetting = new ConfigSettingString({
+  id: "ticktick-api-token",
+  label: "TickTick API token",
+  storageKey: "integrations.ticktick.apiToken",
+  defaultValue: "",
+  editorTitle: "TickTick API token",
+  glassesEditTitle: "Edit TickTick API token",
+  inputKind: "password",
+  normalize: (value) => value?.trim() ?? "",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description:
+    "Account API token from TickTick web Settings > Account. Used locally for direct task updates and the Glanceboard widget without an LLM.",
+});
+
 export const whisperServerUrlSetting = new ConfigSettingString({
   id: "whisper-server-url",
   label: "Whisper server URL",
@@ -1629,6 +1650,7 @@ export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
   if (value === "stacked") return "Stacked";
   if (value === "stacked-percentage") return "Stacked percentage";
   if (value === "dense") return "Dense";
+  if (value === "dense-percentage") return "Dense percentage";
   return "Icon";
 }
 

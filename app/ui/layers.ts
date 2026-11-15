@@ -101,6 +101,10 @@ export interface LayerContext {
 
 export interface Layer {
   readonly depth?: number;
+  /** A stacked overlay may claim the shell's plain long-press gesture. */
+  readonly claimsLongPress?: boolean;
+  /** A stacked overlay may claim the tap-then-hold application gesture. */
+  readonly claimsShortThenLongPress?: boolean;
   paintParts?(): Plane[];
   readonly paintOverBase?: boolean;
   /**

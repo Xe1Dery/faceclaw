@@ -390,6 +390,7 @@ function paintLiveBoard(board: GlanceBoard, ctx: LayerContext): GrayImage {
  * the display is on; the sleep-time GlanceHost owns a separate board.
  */
 class PinnedGlanceboardLayer implements Layer {
+  readonly claimsShortThenLongPress = true;
   private readonly board: GlanceBoard;
   private active = false;
 
@@ -408,8 +409,12 @@ class PinnedGlanceboardLayer implements Layer {
     return paintLiveBoard(this.board, ctx);
   }
 
-  handleInput(event: InputEvent): void {
-    if (event.type === "double-click") shell.yieldFocusToSidebar();
+  async handleInput(event: InputEvent): Promise<void> {
+    if (event.type === "double-click") {
+      shell.yieldFocusToSidebar();
+      return;
+    }
+    await this.board.handleInput(event);
   }
 
   stop(): void {

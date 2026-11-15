@@ -49,6 +49,7 @@ function harness(options = {}) {
     notificationCount: options.notificationCount ?? 0,
     time: options.time ?? '14:05',
   };
+  const batteryCalls = { dense: 0, densePercentage: 0 };
   class Setting {
     constructor(spec) { Object.assign(this, spec); }
     get() { return values.get(this.storageKey) ?? this.defaultValue; }
@@ -76,7 +77,9 @@ function harness(options = {}) {
   const battery = {
     BATTERY_ICON_WIDTH: 12, DENSE_BATTERY_BLOCK_HEIGHT: 22,
     denseBatteriesWidth: (items) => items.length * 26,
-    drawDenseBatteries: () => {}, drawBattery: () => {},
+    drawDenseBatteries: () => { batteryCalls.dense += 1; },
+    drawDensePercentageBatteries: () => { batteryCalls.densePercentage += 1; },
+    drawBattery: () => {},
   };
   const widget = load('app/apps/glanceboard/widgets/system-card.ts', {
     '../../../graphics/battery': battery,
@@ -109,7 +112,7 @@ function harness(options = {}) {
     '../glance-font': { glanceFont: { large: () => font(32, 16), medium: () => font(24, 12), small: () => font(16, 8) } },
     '../widget': {},
   });
-  return { widget, state, values, settings, settingListeners };
+  return { widget, state, values, settings, settingListeners, batteryCalls };
 }
 
 const paint = (h, width, height) => {
@@ -196,4 +199,12 @@ test('toggles hide their blocks and the link toggle is in the settings menu', ()
   assert.ok(!image.texts.some((t) => /^\d+$/.test(t.text)), 'no counter');
   const labels = h.widget.systemCardSettingsMenuItems().map((item) => item.label);
   assert.ok(labels.includes('OpenClaw link'), labels.join(','));
+});
+
+test('the system card uses the same-footprint dense percentage renderer', () => {
+  const h = harness();
+  h.values.set('battery.displayMode', 'dense-percentage');
+  paint(h, 640, 480);
+  assert.equal(h.batteryCalls.dense, 0);
+  assert.equal(h.batteryCalls.densePercentage, 1);
 });

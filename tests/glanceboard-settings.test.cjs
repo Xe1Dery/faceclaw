@@ -21,6 +21,7 @@ function harness() {
   const values = new Map();
   const listeners = new Set();
   const live = new Set();
+  const input = [];
   const glasses = { haveCompass: true };
   class Setting {
     constructor(options) { Object.assign(this, options); }
@@ -36,9 +37,10 @@ function harness() {
     onAnySettingChanged: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
   };
   const widgets = {
-    glanceWidgetSpans: (choice) => choice === 'calendar' || choice === 'terminal',
+    glanceWidgetSpans: (choice) => choice === 'calendar' || choice === 'terminal' || choice === 'ticktick',
     findGlanceWidget: (choice) => ({ create: () => ({
       start() { live.add(choice); }, stop() { live.delete(choice); }, paint() {},
+      handleInput(event) { input.push([choice, event.type]); return choice === 'music'; },
     }) }),
   };
   const settings = load('app/apps/glanceboard/glanceboard-settings.ts', {
@@ -53,7 +55,7 @@ function harness() {
     '../../graphics/image': { GrayImage }, '../../ui/dashboard-settings': config,
     './glanceboard-settings': settings, './layout': layout, './widgets': widgets,
   });
-  return { settings, GlanceBoard, values, listeners, live, glasses, notify: () => [...listeners].forEach((listener) => listener()) };
+  return { settings, GlanceBoard, values, listeners, live, input, glasses, notify: () => [...listeners].forEach((listener) => listener()) };
 }
 
 test('layout defaults to 2x2; expanding preserves stored slots and remembers the extra row', () => {
@@ -61,6 +63,7 @@ test('layout defaults to 2x2; expanding preserves stored slots and remembers the
   values.set('glanceboard.quadrants.slot.0', 'compass');
   assert.equal(s.glanceLayoutSetting.get(), '2x2');
   assert.equal(s.glanceLayout(), layout.QUADRANT_LAYOUT);
+  assert.ok(s.glanceSlotSettings()[0].values.includes('ticktick'));
   s.glanceLayoutSetting.set('2x3');
   assert.equal(s.glanceLayout(), layout.SIX_SLOT_LAYOUT);
   assert.deepEqual(Array.from(s.glanceSlotSettings(), (slot) => slot.get()),
@@ -138,5 +141,17 @@ test('a live board drops the compass widget when the paired glasses have no comp
   h.glasses.haveCompass = false;
   h.notify();
   assert.ok(!h.live.has('compass'));
+  board.stop();
+});
+
+test('the live board keeps generic input routing available for interactive widgets', async () => {
+  const h = harness();
+  const slots = h.settings.glanceSlotSettings();
+  slots.forEach((slot) => slot.set('none'));
+  slots[0].set('music');
+  const board = new h.GlanceBoard(() => {});
+  board.start();
+  assert.equal(await board.handleInput({ type: 'scroll-down' }), true);
+  assert.deepEqual(Array.from(h.input, (entry) => Array.from(entry)), [['music', 'scroll-down']]);
   board.stop();
 });

@@ -4,6 +4,7 @@ import {
   denseBatteriesWidth,
   drawBattery,
   drawDenseBatteries,
+  drawDensePercentageBatteries,
   type BatteryDevice,
 } from "../../../graphics/battery";
 import { GrayImage, imageFromAsciiArt, type UiFont } from "../../../graphics/image";
@@ -432,17 +433,19 @@ function collectBatteryItems(): BatteryItem[] {
  * The battery indicators in the configured style. Side-by-side styles put
  * the label beside the gauge (or percentage) on one line; stacked styles
  * centre the label above it; the dense style swaps labels for device icons
- * and stacks two indicators per column, as in the top bar.
+ * and stacks two indicators per column, as in the top bar. Dense percentage
+ * keeps the same footprint and replaces only the gauge with compact digits.
  */
 function batteryBlock(font: UiFont, items: readonly BatteryItem[]): SideBlock {
   const mode = batteryDisplayModeSetting.get();
-  if (mode === "dense") {
+  if (mode === "dense" || mode === "dense-percentage") {
     const width = denseBatteriesWidth(items);
     return {
       width,
       height: DENSE_BATTERY_BLOCK_HEIGHT,
       draw: (image, left, top) => {
-        drawDenseBatteries(image, items, left + width, top);
+        if (mode === "dense-percentage") drawDensePercentageBatteries(image, items, left + width, top);
+        else drawDenseBatteries(image, items, left + width, top);
       },
     };
   }

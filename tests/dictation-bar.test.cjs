@@ -12,10 +12,15 @@ function layerEnv(opts = {}) {
   const transcriptListeners = new Set();
   const speechEndListeners = new Set();
   const statusListeners = new Set();
+  const stopResolvers = [];
   const actions = {
     requestRender() {},
     startVoiceCapture: (endpointing) => { actions.starts.push(endpointing); },
-    stopVoiceCapture: () => { actions.stops += 1; },
+    stopVoiceCapture: () => {
+      actions.stops += 1;
+      if (!opts.asyncStop) return;
+      return new Promise((resolve) => stopResolvers.push(resolve));
+    },
     starts: [],
     stops: 0,
   };
@@ -65,6 +70,9 @@ function layerEnv(opts = {}) {
   function fireSpeechEnd() {
     for (const listener of [...speechEndListeners]) listener();
   }
+  function resolveStop() {
+    stopResolvers.shift()?.();
+  }
   function openBar(overrides = {}, settle = true) {
     const done = [];
     const dismisses = { count: 0 };
@@ -93,12 +101,13 @@ function layerEnv(opts = {}) {
     layer.paint({}, () => image);
     return ops;
   }
-  return { mod, actions, advance, emitTranscript, fireSpeechEnd, openBar, paint, timers, now };
+  return { mod, actions, advance, emitTranscript, fireSpeechEnd, resolveStop, openBar, paint, timers, now };
 }
 
 const click = { type: 'click', timestampMs: 0 };
 const doubleClick = { type: 'double-click', timestampMs: 0 };
 const scrollDown = { type: 'scroll-down', timestampMs: 0 };
+const longPress = { type: 'long-press', timestampMs: 0 };
 
 test('the bar opens with the mic running hands-free', () => {
   const env = layerEnv();
@@ -106,6 +115,11 @@ test('the bar opens with the mic running hands-free', () => {
   layer.startCapture();
   assert.deepEqual(env.actions.starts, [true]); // endpointing capture
   assert.equal(layer.isCapturing(), true);
+  const ops = env.paint(layer);
+  assert.ok(ops.some((o) => o.op === 'text' && /отправить/.test(o.text ?? '')),
+    'controls are visible from the first recording frame');
+  assert.ok(ops.some((o) => o.op === 'fillRect' && o.a[2] === 8 && o.a[3] === 12),
+    'the recording microphone stays filled');
 });
 
 test('a finalized phrase shows the glyph hints and sends on tap', () => {
@@ -117,7 +131,7 @@ test('a finalized phrase shows the glyph hints and sends on tap', () => {
   const ops = env.paint(layer);
   const hint = ops.find((o) => o.op === 'text' && /отправить/.test(o.text ?? ''));
   assert.ok(hint, 'hint row appears after finalization');
-  assert.match(hint.text, /● отправить\s+▲▼ заново\s+●● закрыть/);
+  assert.match(hint.text, /● отправить\s+▲▼ заново\s+— дополнить\s+●● закрыть/);
   assert.ok(
     ops.some((o) => o.op === 'drawRect' && o.a[2] === 8 && o.a[3] === 12),
     'the finalized microphone is outline-only',
@@ -142,7 +156,7 @@ test('a tap mid-dictation ends the utterance and sends the trailing final', () =
   assert.equal(done[0].text, 'напомни завтра');
 });
 
-test('a tap-send with nothing heard returns to listening instead of sending', () => {
+test('ordinary dictation can retry a tap-send with nothing heard', () => {
   const env = layerEnv();
   const { layer, done, dismisses } = env.openBar();
   layer.startCapture();
@@ -152,6 +166,18 @@ test('a tap-send with nothing heard returns to listening instead of sending', ()
   assert.equal(dismisses.count, 0);
   assert.equal(env.actions.starts.length, 2); // the mic re-opened
   assert.equal(layer.isCapturing(), true);
+});
+
+test('notification dictation closes on empty recognition and returns to its choices', () => {
+  const env = layerEnv();
+  const { layer, done, dismisses } = env.openBar({ closeOnEmpty: true });
+  layer.startCapture();
+  layer.handleInput(click);
+  env.advance(2_500);
+  assert.equal(done.length, 1);
+  assert.equal(done[0].action, 'closed');
+  assert.equal(dismisses.count, 1);
+  assert.equal(env.actions.starts.length, 1, 'the silent attempt is not restarted');
 });
 
 test('scroll wipes the phrase and re-opens the mic', () => {
@@ -166,7 +192,39 @@ test('scroll wipes the phrase and re-opens the mic', () => {
   env.advance(0);
   assert.equal(env.actions.starts.length, 2);
   const ops = env.paint(layer);
-  assert.ok(!ops.some((o) => o.op === 'text' && /отправить/.test(o.text ?? '')));
+  assert.ok(ops.some((o) => o.op === 'text' && /отправить/.test(o.text ?? '')),
+    'the stable control row remains visible while recording restarts');
+});
+
+test('redo ignores the old capture final and clears again when an asynchronous stop settles', async () => {
+  const env = layerEnv({ asyncStop: true });
+  const { layer } = env.openBar();
+  layer.startCapture();
+  env.emitTranscript('старый текст', false);
+  layer.handleInput(scrollDown);
+  env.emitTranscript('старый текст целиком', true); // trailing final from the capture being discarded
+  assert.equal(env.actions.starts.length, 1, 'the replacement capture waits for the old stop');
+  env.resolveStop();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(env.actions.starts.length, 2);
+  const ops = env.paint(layer);
+  assert.ok(!ops.some((o) => o.op === 'text' && /старый текст/.test(o.text ?? '')),
+    'neither the partial nor the trailing final survives redo');
+});
+
+test('long press after finalization records and appends another utterance', () => {
+  const env = layerEnv();
+  const { layer, done } = env.openBar();
+  layer.startCapture();
+  env.emitTranscript('перенеси на завтра', true);
+  env.fireSpeechEnd();
+  layer.handleInput(longPress);
+  assert.equal(env.actions.starts.length, 2, 'hold reopens the microphone');
+  env.emitTranscript('в десять утра', true);
+  env.fireSpeechEnd();
+  layer.handleInput(click);
+  assert.equal(done.length, 1);
+  assert.equal(done[0].text, 'перенеси на завтра в десять утра');
 });
 
 test('double-tap closes without sending and stops the mic', () => {
@@ -205,16 +263,71 @@ test('a tap inside the auto-send grace sends at once', () => {
   assert.equal(done[0].action, 'sent');
 });
 
+test('a rejected submission shows its error for three seconds before closing', () => {
+  const env = layerEnv();
+  const { layer, done, dismisses } = env.openBar({
+    onSubmit: () => ({ accepted: false, error: 'Нет связи с OpenClaw' }),
+  });
+  layer.startCapture();
+  env.emitTranscript('перенеси на вечер', true);
+  env.fireSpeechEnd();
+  layer.handleInput(click);
+  assert.equal(done.length, 0);
+  assert.equal(dismisses.count, 0);
+  const ops = env.paint(layer);
+  assert.ok(ops.some((o) => o.op === 'text' && o.text === 'Нет связи с OpenClaw'));
+  assert.ok(ops.some((o) => o.op === 'text' && /отправить/.test(o.text ?? '')),
+    'the stable controls remain visible during the error');
+  env.advance(2_900);
+  assert.equal(dismisses.count, 0);
+  env.advance(200);
+  assert.equal(dismisses.count, 1);
+  assert.equal(done.length, 1);
+  assert.equal(done[0].action, 'closed');
+});
+
+test('a successful specialized submission runs its action only after dismissal', () => {
+  const env = layerEnv();
+  const order = [];
+  const { layer } = env.openBar({
+    dismiss: () => order.push('dismiss'),
+    onDone: () => order.push('done'),
+    onSubmit: () => ({ accepted: true, afterDismiss: () => order.push('action') }),
+  });
+  layer.startCapture();
+  env.emitTranscript('ответ', true);
+  env.fireSpeechEnd();
+  layer.handleInput(click);
+  assert.deepEqual(order, ['dismiss', 'done', 'action']);
+});
+
+test('an asynchronous specialized submission keeps the bar until the task update settles', async () => {
+  const env = layerEnv();
+  let resolveSubmission;
+  const submission = new Promise((resolve) => { resolveSubmission = resolve; });
+  const { layer, done, dismisses } = env.openBar({ onSubmit: () => submission });
+  layer.startCapture();
+  env.emitTranscript('отложи на десять минут', true);
+  env.fireSpeechEnd();
+  layer.handleInput(click);
+  assert.equal(done.length, 0);
+  assert.equal(dismisses.count, 0);
+  resolveSubmission({ accepted: true });
+  await Promise.resolve();
+  assert.equal(done.length, 1);
+  assert.equal(dismisses.count, 1);
+});
+
 test('the bar is bottom-anchored and grows upward as the phrase wraps', () => {
   const env = layerEnv();
   const { layer } = env.openBar();
   layer.startCapture();
   const oneLine = env.paint(layer).find((o) => o.op === 'fillRect');
-  // One line: 44px tall, bottom edge exactly on the interface bottom (402).
+  // One line plus its permanent controls: 62px, bottom edge exactly on the interface bottom (402).
   assert.equal(oneLine.a[1] + oneLine.a[3], 402);
-  assert.equal(oneLine.a[3], 44);
+  assert.equal(oneLine.a[3], 62);
   // A phrase that wraps to two lines: taller, bottom edge unchanged.
-  env.emitTranscript('а'.repeat(40), true);
+  env.emitTranscript('а'.repeat(80), true);
   env.fireSpeechEnd();
   const grown = env.paint(layer).find((o) => o.op === 'fillRect');
   assert.ok(grown.a[3] > oneLine.a[3]);
@@ -313,6 +426,19 @@ test('the locked-glasses bar paints standalone at the Display-mode bottom', () =
   assert.equal(image.value, 1, 'the canvas starts opaque black');
   const frame = image.ops.find((o) => o.op === 'fillRect');
   assert.equal(frame.a[1] + frame.a[3], 402, 'same interface anchor, without painting the interface');
+});
+
+test('notification dictation can preserve the standalone notification below it', () => {
+  const env = layerEnv();
+  const { layer } = env.openBar({ standalone: true, preserveStandaloneBelow: true });
+  layer.startCapture();
+  let belowAsked = false;
+  const below = { ops: [], fillRect(...a) { this.ops.push({ op: 'fillRect', a }); },
+    drawRect() {}, drawLine() {}, drawText() {} };
+  const image = layer.paint({}, () => { belowAsked = true; return below; });
+  assert.equal(belowAsked, true);
+  assert.equal(image, below);
+  assert.ok(image.ops.some((op) => op.op === 'fillRect'), 'the dictation bar paints over the retained popup');
 });
 
 test('the locked-glasses no-link refusal paints standalone too', () => {
